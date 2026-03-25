@@ -13,61 +13,27 @@ export default {
       });
     }
 
-    // Check for auth credentials (username and password)
-    const authHeader = request.headers.get("Authorization");
-    const [username, password] = authHeader
-      ? Buffer.from(authHeader.split(" ")[1], "base64").toString().split(":")
-      : [null, null];
-
-    if (!username || !password) {
-      return new Response("Unauthorized", {
-        status: 401,
-        headers: { "WWW-Authenticate": 'Basic realm="Pornolab API"' }
-      });
-    }
-
     const query = url.searchParams.get("Query") || url.searchParams.get("query");
     if (!query) {
       return jsonResponse({ Results: [], Indexers: [] });
     }
 
-    // Pornolab categories (optional: 1=Video, 2=Images, 3=Games, etc.)
-    const categories = ["0"]; // "0" = all categories
+    // XXXTor categories (optional, adjust as needed)
+    const categories = [];
     let htmlPages = [];
 
     try {
-      // First, log in to Pornolab to get cookies
-      const loginForm = new FormData();
-      loginForm.append("username", username);
-      loginForm.append("password", password);
-      loginForm.append("login", "Войти");
-
-      const loginResponse = await fetch("https://pornolab.net/forum/login.php", {
-        method: "POST",
-        body: loginForm,
-        headers: {
-          "User-Agent": "Mozilla/5.0",
-          "Content-Type": "multipart/form-data",
-        },
-      });
-
-      if (!loginResponse.ok) {
-        return new Response("Login failed", { status: 401 });
-      }
-
-      // Get cookies from the login response
-      const cookies = loginResponse.headers.get("set-cookie");
-
-      // Now perform the search with authenticated session
+      // XXXTor search URL format
       htmlPages = await Promise.all(
-        categories.map(cat =>
-          fetch(`https://pornolab.net/forum/search.php?st=0&sr=topics&sf=titleonly&sk=t&sd=d&start=0&search=${encodeURIComponent(query)}&c[]=${cat}`, {
-            headers: {
-              "User-Agent": "Mozilla/5.0",
-              "Cookie": cookies,
-            }
-          }).then(r => r.text())
-        )
+        categories.length > 0
+          ? categories.map(cat =>
+              fetch(`https://xxxtor.com/search/${encodeURIComponent(query)}/${cat}`, {
+                headers: { "User-Agent": "Mozilla/5.0" }
+              }).then(r => r.text())
+            )
+          : [fetch(`https://xxxtor.com/search/${encodeURIComponent(query)}`, {
+              headers: { "User-Agent": "Mozilla/5.0" }
+            }).then(r => r.text())]
       );
     } catch (e) {
       return jsonResponse({ Results: [], Indexers: [] });
@@ -77,24 +43,24 @@ export default {
     const seen = new Set(); // Avoid duplicates
 
     for (const html of htmlPages) {
-      // Parse rows with torrents (Pornolab uses tables with class "topics")
-      const rowRegex = /<tr class="[^"]*">([\s\S]*?)<\/tr>/g;
+      // Parse rows with torrents (XXXTor uses <div class="torrent-item">)
+      const rowRegex = /<div class="torrent-item">([\s\S]*?)<\/div>/g;
       let row;
 
       while ((row = rowRegex.exec(html)) !== null) {
         const block = row[1];
 
         // Extract title and torrent ID
-        const titleMatch = block.match(/<a href="\/forum\/viewtopic\.php\?t=(\d+)"[^>]*>(.*?)<\/a>/);
+        const titleMatch = block.match(/href="\/torrent\/(\d+)\/([^"]+)"/);
         if (!titleMatch) continue;
 
         const id = titleMatch[1];
-        const title = titleMatch[2].trim();
+        const title = decodeURIComponent(titleMatch[2].replace(/-/g, ' ')).trim();
 
         if (seen.has(id)) continue;
         seen.add(id);
 
-        // Extract magnet link (Pornolab uses "magnet:?" links)
+        // Extract magnet link (XXXTor uses direct magnet links)
         const magnetMatch = block.match(/href="(magnet:\?[^"]+)"/);
         const magnet = magnetMatch ? magnetMatch[1] : "";
         const hash = (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] || "";
@@ -103,21 +69,22 @@ export default {
         const sizeMatch = block.match(/(\d+[\.,]?\d*)\s*(GB|MB|KB)/i);
         const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
 
-        // Extract seeders/peers (Pornolab shows them in <td> tags)
-        const seedMatch = block.match(/<td[^>]*>(\d+)<\/td>/g);
-        const seeders = seedMatch && seedMatch.length >= 3 ? parseInt(seedMatch[2].replace(/<[^>]+>/g, "")) : 0;
-        const peers = seedMatch && seedMatch.length >= 4 ? parseInt(seedMatch[3].replace(/<[^>]+>/g, "")) : 0;
+        // Extract seeders/peers (XXXTor shows them in <span> tags)
+        const seedMatch = block.match(/<span class="seeders">(\d+)<\/span>/);
+        const peerMatch = block.match(/<span class="leechers">(\d+)<\/span>/);
+        const seeders = seedMatch ? parseInt(seedMatch[1]) : 0;
+        const peers = peerMatch ? parseInt(peerMatch[1]) : 0;
 
         Results.push({
           Title:       title,
           Seeders:     seeders,
           Peers:       peers,
           Size:        size,
-          Tracker:     "Pornolab",
+          Tracker:     "XXXTor",
           MagnetUri:   hash
             ? `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}`
             : magnet,
-          Link:        `https://pornolab.net/forum/viewtopic.php?t=${id}`,
+          Link:        `https://xxxtor.com/torrent/${id}/${encodeURIComponent(title.replace(/\s+/g, '-'))}`,
           PublishDate: new Date().toISOString(),
         });
       }
