@@ -10,7 +10,11 @@ export default {
     }
 
     const searchUrl = `https://rutor.info/search/0/0/010/0/${encodeURIComponent(query)}`;
-    const html = await fetch(searchUrl).then(r => r.text());
+    const html = await fetch(searchUrl, {
+  headers: {
+    "User-Agent": "Mozilla/5.0"
+  }
+}).then(r => r.text());
 
     const results = [];
 
