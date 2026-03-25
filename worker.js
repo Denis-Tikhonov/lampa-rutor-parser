@@ -1,48 +1,75 @@
 export default {
   async fetch(request) {
     const url = new URL(request.url);
-    const query = url.searchParams.get("query");
 
-    // Если запрос пустой — возвращаем пустой массив
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Headers": "*",
+        }
+      });
+    }
+
+    // Lampa шлёт "Query" с большой буквы, поддерживаем оба варианта
+    const query = url.searchParams.get("Query") || url.searchParams.get("query");
+
     if (!query) {
-      return new Response(JSON.stringify({ results: [] }), {
-        headers: { "Content-Type": "application/json" }
+      return jsonResponse({ Results: [], Indexers: [] });
+    }
+
+    let xml = "";
+    try {
+      xml = await fetch(`https://rutor.info/rss.php?search=${encodeURIComponent(query)}`, {
+        headers: { "User-Agent": "Mozilla/5.0" }
+      }).then(r => r.text());
+    } catch (e) {
+      return jsonResponse({ Results: [], Indexers: [] });
+    }
+
+    const Results = [];
+    const itemRegex = /<item>([\s\S]*?)<\/item>/g;
+    let item;
+
+    while ((item = itemRegex.exec(xml)) !== null) {
+      const block = item[1];
+      const title  = extractTag(block, "title");
+      const link   = extractTag(block, "link");
+      // Реальный magnet-хэш из RSS, а не числовой ID
+      const magnet = (block.match(/magnet:\?[^"<\s]+/) || [])[0] || "";
+      const hash   = (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] || "";
+
+      if (!title) continue;
+
+      Results.push({
+        Title:      title,
+        Seeders:    0,
+        Size:       0,
+        Tracker:    "Rutor",
+        MagnetUri:  hash
+          ? `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}`
+          : magnet,
+        Link:       link,
+        PublishDate: new Date().toISOString(),
       });
     }
 
-    // RSS поиск по rutor
-    const rssUrl = `https://rutor.info/rss.php?search=${encodeURIComponent(query)}`;
-
-    // Делаем запрос с нормальным User-Agent
-    const xml = await fetch(rssUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0"
-      }
-    }).then(r => r.text());
-
-    const results = [];
-
-    // Парсим RSS
-    const regex = /<item>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<link>(.*?)<\/link>/g;
-    let match;
-
-    while ((match = regex.exec(xml)) !== null) {
-      const title = match[1];
-      const link = match[2];
-
-      // Извлекаем ID торрента
-      const id = link.match(/torrent\/(\d+)/)?.[1];
-
-      results.push({
-        title,
-        url: link,
-        magnet: `magnet:?xt=urn:btih:${id}`,
-        quality: title.match(/2160p|1080p|720p|HDRip|BDRip|WEBRip/i)?.[0] || "unknown"
-      });
-    }
-
-    return new Response(JSON.stringify({ results }), {
-      headers: { "Content-Type": "application/json" }
-    });
+    return jsonResponse({ Results, Indexers: [] });
   }
 };
+
+function extractTag(str, tag) {
+  const m = str.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>`, "i"))
+    || str.match(new RegExp(`<${tag}[^>]*>([^<]*)<\\/${tag}>`, "i"));
+  return m ? m[1].trim() : "";
+}
+
+function jsonResponse(data) {
+  return new Response(JSON.stringify(data), {
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+    }
+  });
+}
