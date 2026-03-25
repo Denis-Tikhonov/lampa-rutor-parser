@@ -31,13 +31,15 @@ export default {
 
       items.push({
         title,
-        name: title,
+        name: title,               // для модов
         url: link,
         magnet: `magnet:?xt=urn:btih:${id}`,
         quality: title.match(/2160p|1080p|720p|HDRip|BDRip|WEBRip/i)?.[0] || "unknown"
       });
     }
 
+    // Оригинальная Lampa → results
+    // Моды → torrents
     return new Response(JSON.stringify({
       results: items,
       torrents: items
