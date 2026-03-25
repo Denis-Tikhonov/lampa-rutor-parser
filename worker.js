@@ -18,9 +18,9 @@ export default {
       return jsonResponse({ Results: [], Indexers: [] });
     }
 
-    let xml = "";
+    let html = "";
     try {
-      xml = await fetch(`https://rutor.info/rss.php?search=${encodeURIComponent(query)}`, {
+      html = await fetch(`https://rutor.info/search/0/0/010/0/${encodeURIComponent(query)}`, {
         headers: { "User-Agent": "Mozilla/5.0" }
       }).then(r => r.text());
     } catch (e) {
@@ -28,45 +28,44 @@ export default {
     }
 
     const Results = [];
-    const itemRegex = /<item>([\s\S]*?)<\/item>/g;
-    let item;
+    const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+    let row;
 
-    while ((item = itemRegex.exec(xml)) !== null) {
-      const block = item[1];
+    while ((row = rowRegex.exec(html)) !== null) {
+      const block = row[1];
 
-      const title = extractTag(block, "title");
-      const link  = extractTag(block, "link");
+      // Название и ID
+      const titleMatch = block.match(/href="\/torrent\/(\d+)\/[^"]*">([^<]+)<\/a>/);
+      if (!titleMatch) continue;
 
-      if (!title) continue;
+      const id    = titleMatch[1];
+      const title = titleMatch[2].trim();
 
-      // Ищем magnet везде где он может быть
-      let magnet = "";
+      // Magnet
+      const magnetMatch = block.match(/href="(magnet:\?[^"]+)"/);
+      const magnet = magnetMatch ? magnetMatch[1] : "";
+      const hash   = (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] || "";
 
-      // 1. В теге <enclosure url="magnet:...">
-      const enclosureMatch = block.match(/<enclosure[^>]+url="(magnet:[^"]+)"/i);
-      if (enclosureMatch) magnet = enclosureMatch[1];
+      // Размер
+      const sizeMatch = block.match(/([\d.,]+)&nbsp;(GB|MB|KB)/i);
+      const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
 
-      // 2. Просто в тексте блока
-      if (!magnet) {
-        const textMatch = block.match(/magnet:\?[^"<\s&]+/);
-        if (textMatch) magnet = textMatch[0];
-      }
-
-      // 3. В теге <link> если там magnet
-      if (!magnet && link.startsWith("magnet:")) magnet = link;
-
-      const hash = (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] || "";
+      // Сиды (зелёные) и личеры (красные)
+      const seedMatch = block.match(/<font color="#00b000">(\d+)<\/font>/);
+      const peerMatch = block.match(/<font color="red">(\d+)<\/font>/);
+      const seeders   = seedMatch ? parseInt(seedMatch[1]) : 0;
+      const peers     = peerMatch ? parseInt(peerMatch[1]) : 0;
 
       Results.push({
         Title:       title,
-        Seeders:     0,
-        Peers:       0,
-        Size:        0,
+        Seeders:     seeders,
+        Peers:       peers,
+        Size:        size,
         Tracker:     "Rutor",
         MagnetUri:   hash
           ? `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}`
           : magnet,
-        Link:        link.startsWith("magnet:") ? "" : link,
+        Link:        `https://rutor.info/torrent/${id}`,
         PublishDate: new Date().toISOString(),
       });
     }
@@ -75,10 +74,14 @@ export default {
   }
 };
 
-function extractTag(str, tag) {
-  const m = str.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>`, "i"))
-    || str.match(new RegExp(`<${tag}[^>]*>([^<]*)<\\/${tag}>`, "i"));
-  return m ? m[1].trim() : "";
+function parseSizeToBytes(num, unit) {
+  const n = parseFloat(num.replace(",", "."));
+  switch (unit.toUpperCase()) {
+    case "GB": return Math.round(n * 1024 ** 3);
+    case "MB": return Math.round(n * 1024 ** 2);
+    case "KB": return Math.round(n * 1024);
+    default:   return 0;
+  }
 }
 
 function jsonResponse(data) {
