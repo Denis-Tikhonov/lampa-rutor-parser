@@ -12,7 +12,6 @@ export default {
       });
     }
 
-    // Lampa шлёт "Query" с большой буквы, поддерживаем оба варианта
     const query = url.searchParams.get("Query") || url.searchParams.get("query");
 
     if (!query) {
@@ -36,11 +35,12 @@ export default {
       const block = item[1];
       const title  = extractTag(block, "title");
       const link   = extractTag(block, "link");
-      // Реальный magnet-хэш из RSS, а не числовой ID
       const magnet = (block.match(/magnet:\?[^"<\s]+/) || [])[0] || "";
       const hash   = (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] || "";
 
       if (!title) continue;
+
+      const quality = detectQuality(title);
 
       Results.push({
         Title:      title,
@@ -52,15 +52,37 @@ export default {
           : magnet,
         Link:       link,
         PublishDate: new Date().toISOString(),
+        Quality:    quality
       });
     }
+
+    // простая сортировка по качеству
+    Results.sort((a, b) => qualityRank(b.Quality) - qualityRank(a.Quality));
 
     return jsonResponse({ Results, Indexers: [] });
   }
 };
 
+function detectQuality(t) {
+  return (t.match(/2160p|4K|1080p|720p|WEBRip|BDRip|HDRip/i) || ["unknown"])[0];
+}
+
+function qualityRank(q) {
+  const order = ["2160p", "4K", "1080p", "720p", "WEBRip", "BDRip", "HDRip", "unknown"];
+  const i = order.indexOf(q);
+  return i === -1 ? order.length : i;
+}
+
 function extractTag(str, tag) {
-  const m = str.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>`, "i"))
+  const m = str.match(new RegExp(`<${tag}[^>]*><!\
+
+\[CDATA\
+
+\[([\\s\\S]*?)\\]
+
+\\]
+
+><\\/${tag}>`, "i"))
     || str.match(new RegExp(`<${tag}[^>]*>([^<]*)<\\/${tag}>`, "i"));
   return m ? m[1].trim() : "";
 }
