@@ -1,88 +1,50 @@
 export default {
   async fetch(request) {
     const url = new URL(request.url);
-
-    if (request.method === "OPTIONS") {
-      return new Response(null, {
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, OPTIONS",
-          "Access-Control-Allow-Headers": "*",
-        }
-      });
-    }
-
-    const query = url.searchParams.get("query") || url.searchParams.get("Query");
+    const query = url.searchParams.get("query");
 
     if (!query) {
-      return jsonResponse({ Results: [], Indexers: [] });
+      return new Response(JSON.stringify({ results: [], torrents: [] }), {
+        headers: { "Content-Type": "application/json" }
+      });
     }
 
     const rssUrl = `https://rutor.info/rss.php?search=${encodeURIComponent(query)}`;
 
-    let xml = "";
-    try {
-      xml = await fetch(rssUrl, {
-        headers: { "User-Agent": "Mozilla/5.0" }
-      }).then(r => r.text());
-    } catch (e) {
-      return jsonResponse({ Results: [], Indexers: [] });
-    }
+    const xml = await fetch(rssUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0"
+      }
+    }).then(r => r.text());
 
-    const Results = [];
-    const itemRegex = /<item>([\s\S]*?)<\/item>/g;
-    let item;
+    const items = [];
 
-    while ((item = itemRegex.exec(xml)) !== null) {
-      const block = item[1];
-      const title  = extractTag(block, "title");
-      const link   = extractTag(block, "link");
-      const magnet = extractMagnet(block);
+    const regex = /<item>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<link>(.*?)<\/link>/g;
+    let match;
 
-      if (!title || !link) continue;
+    while ((match = regex.exec(xml)) !== null) {
+      const title = match[1];
+      const link = match[2];
+      const id = link.match(/torrent\/(\d+)/)?.[1];
 
-      const hash = magnet?.match(/btih:([a-fA-F0-9]{40})/i)?.[1] || "";
-      const realMagnet = hash
-        ? `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}`
-        : magnet || "";
+      if (!id) continue;
 
-      Results.push({
-        Tracker:     "Rutor",
-        TrackerId:   "rutor",
-        Title:       title,
-        Guid:        link,
-        Details:     link,
-        Link:        link,
-        MagnetUri:   realMagnet,
-        Size:        0,
-        Seeders:     0,
-        Peers:       0,
-        CategoryDesc: "Movies",
-        Category:    [2000],
-        PublishDate: new Date().toISOString(),
+      items.push({
+        title,
+        name: title,               // для модов
+        url: link,
+        magnet: `magnet:?xt=urn:btih:${id}`,
+        quality: title.match(/2160p|1080p|720p|HDRip|BDRip|WEBRip/i)?.[0] || "unknown"
       });
     }
 
-    return jsonResponse({ Results, Indexers: [] });
+    // Оригинальная Lampa → results
+    // Моды → torrents
+    return new Response(JSON.stringify({
+      results: items,
+      torrents: items
+    }), {
+      headers: { "Content-Type": "application/json" }
+    });
   }
 };
-
-function extractTag(str, tag) {
-  const m = str.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>`, "i"))
-    || str.match(new RegExp(`<${tag}[^>]*>([^<]*)<\\/${tag}>`, "i"));
-  return m ? m[1].trim() : "";
-}
-
-function extractMagnet(block) {
-  const m = block.match(/magnet:\?[^"<\s]+/);
-  return m ? m[0] : "";
-}
-
-function jsonResponse(data) {
-  return new Response(JSON.stringify(data), {
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-    }
-  });
-}
