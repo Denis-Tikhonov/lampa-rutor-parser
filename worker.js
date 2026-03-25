@@ -12,16 +12,15 @@ export default {
       });
     }
 
-    // Lampa шлёт "Query" с большой буквы, поддерживаем оба варианта
     const query = url.searchParams.get("Query") || url.searchParams.get("query");
 
     if (!query) {
       return jsonResponse({ Results: [], Indexers: [] });
     }
 
-    let xml = "";
+    let html = "";
     try {
-      xml = await fetch(`https://rutor.info/rss.php?search=${encodeURIComponent(query)}`, {
+      html = await fetch(`https://rutor.info/search/0/0/010/0/${encodeURIComponent(query)}`, {
         headers: { "User-Agent": "Mozilla/5.0" }
       }).then(r => r.text());
     } catch (e) {
@@ -29,28 +28,49 @@ export default {
     }
 
     const Results = [];
-    const itemRegex = /<item>([\s\S]*?)<\/item>/g;
-    let item;
 
-    while ((item = itemRegex.exec(xml)) !== null) {
-      const block = item[1];
-      const title  = extractTag(block, "title");
-      const link   = extractTag(block, "link");
-      // Реальный magnet-хэш из RSS, а не числовой ID
-      const magnet = (block.match(/magnet:\?[^"<\s]+/) || [])[0] || "";
+    // Каждая строка таблицы с торрентом
+    const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+    let row;
+
+    while ((row = rowRegex.exec(html)) !== null) {
+      const block = row[1];
+
+      // Ссылка на torrent и название
+      const titleMatch = block.match(/href="\/torrent\/(\d+)\/[^"]*">([^<]+)<\/a>/);
+      if (!titleMatch) continue;
+
+      const id    = titleMatch[1];
+      const title = titleMatch[2].trim();
+
+      // Magnet-ссылка
+      const magnetMatch = block.match(/href="(magnet:\?[^"]+)"/);
+      const magnet = magnetMatch ? magnetMatch[1] : "";
       const hash   = (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] || "";
 
-      if (!title) continue;
+      // Размер файла — ищем паттерн типа "4.37 GB" или "1.2 MB"
+      const sizeMatch = block.match(/([\d.,]+)\s*(GB|MB|KB)/i);
+      const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
+
+      // Сиды и личеры — два числа в зелёном/красном цвете
+      const seedMatch  = block.match(/<font color="[^"]*green[^"]*">(\d+)<\/font>/i)
+                      || block.match(/<span[^>]*green[^>]*>(\d+)<\/span>/i);
+      const peerMatch  = block.match(/<font color="[^"]*red[^"]*">(\d+)<\/font>/i)
+                      || block.match(/<span[^>]*red[^>]*>(\d+)<\/span>/i);
+
+      const seeders = seedMatch ? parseInt(seedMatch[1]) : 0;
+      const peers   = peerMatch ? parseInt(peerMatch[1]) : 0;
 
       Results.push({
-        Title:      title,
-        Seeders:    0,
-        Size:       0,
-        Tracker:    "Rutor",
-        MagnetUri:  hash
+        Title:       title,
+        Seeders:     seeders,
+        Peers:       peers,
+        Size:        size,
+        Tracker:     "Rutor",
+        MagnetUri:   hash
           ? `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}`
           : magnet,
-        Link:       link,
+        Link:        `https://rutor.info/torrent/${id}`,
         PublishDate: new Date().toISOString(),
       });
     }
@@ -59,10 +79,14 @@ export default {
   }
 };
 
-function extractTag(str, tag) {
-  const m = str.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>`, "i"))
-    || str.match(new RegExp(`<${tag}[^>]*>([^<]*)<\\/${tag}>`, "i"));
-  return m ? m[1].trim() : "";
+function parseSizeToBytes(num, unit) {
+  const n = parseFloat(num.replace(",", "."));
+  switch (unit.toUpperCase()) {
+    case "GB": return Math.round(n * 1024 ** 3);
+    case "MB": return Math.round(n * 1024 ** 2);
+    case "KB": return Math.round(n * 1024);
+    default:   return 0;
+  }
 }
 
 function jsonResponse(data) {
