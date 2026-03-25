@@ -1,7 +1,6 @@
 export default {
   async fetch(request) {
     const url = new URL(request.url);
-
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -13,14 +12,11 @@ export default {
     }
 
     const query = url.searchParams.get("Query") || url.searchParams.get("query");
-
     if (!query) {
       return jsonResponse({ Results: [], Indexers: [] });
     }
 
-    // Категории: 1=зарубежные фильмы, 2=наши фильмы, 4=зарубежные сериалы, 5=наши сериалы, 10=мультфильмы
     const categories = [1, 2, 4, 5, 10];
-
     let htmlPages = [];
     try {
       htmlPages = await Promise.all(
@@ -34,8 +30,16 @@ export default {
       return jsonResponse({ Results: [], Indexers: [] });
     }
 
+    // Готовим слова запроса для фильтрации — разбиваем на токены
+    // Убираем короткие слова (предлоги, артикли) и спецсимволы
+    const queryTokens = query
+      .toLowerCase()
+      .replace(/[^a-zа-яё0-9\s]/gi, " ")
+      .split(/\s+/)
+      .filter(w => w.length > 2);
+
     const Results = [];
-    const seen = new Set(); // защита от дублей
+    const seen = new Set();
 
     for (const html of htmlPages) {
       const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
@@ -53,9 +57,21 @@ export default {
         if (seen.has(id)) continue;
         seen.add(id);
 
+        // Фильтрация — проверяем что хотя бы половина слов запроса есть в названии
+        const titleLower = title.toLowerCase();
+        if (queryTokens.length > 0) {
+          const matched = queryTokens.filter(token => titleLower.includes(token));
+          const matchRatio = matched.length / queryTokens.length;
+          // Пропускаем если совпало меньше 50% слов запроса
+          if (matchRatio < 0.5) continue;
+        }
+
         const magnetMatch = block.match(/href="(magnet:\?[^"]+)"/);
         const magnet = magnetMatch ? magnetMatch[1] : "";
         const hash   = (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] || "";
+
+        // Пропускаем если нет magnet — бесполезная раздача
+        if (!hash) continue;
 
         const sizeMatch = block.match(/([\d.,]+)&nbsp;(GB|MB|KB)/i);
         const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
@@ -71,18 +87,14 @@ export default {
           Peers:       peers,
           Size:        size,
           Tracker:     "Rutor",
-          MagnetUri:   hash
-            ? `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}`
-            : magnet,
+          MagnetUri:   `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}`,
           Link:        `https://rutor.info/torrent/${id}`,
           PublishDate: new Date().toISOString(),
         });
       }
     }
 
-    // Сортируем по сидам — живые раздачи вверху
     Results.sort((a, b) => b.Seeders - a.Seeders);
-
     return jsonResponse({ Results, Indexers: [] });
   }
 };
