@@ -18,57 +18,70 @@ export default {
       return jsonResponse({ Results: [], Indexers: [] });
     }
 
-    let html = "";
+    // Категории: 1=зарубежные фильмы, 2=наши фильмы, 4=зарубежные сериалы, 5=наши сериалы, 10=мультфильмы
+    const categories = [1, 2, 4, 5, 10];
+
+    let htmlPages = [];
     try {
-      html = await fetch(`https://rutor.info/search/0/0/010/0/${encodeURIComponent(query)}`, {
-        headers: { "User-Agent": "Mozilla/5.0" }
-      }).then(r => r.text());
+      htmlPages = await Promise.all(
+        categories.map(cat =>
+          fetch(`https://rutor.info/search/0/0/0${cat}0/0/${encodeURIComponent(query)}`, {
+            headers: { "User-Agent": "Mozilla/5.0" }
+          }).then(r => r.text())
+        )
+      );
     } catch (e) {
       return jsonResponse({ Results: [], Indexers: [] });
     }
 
     const Results = [];
-    const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
-    let row;
+    const seen = new Set(); // защита от дублей
 
-    while ((row = rowRegex.exec(html)) !== null) {
-      const block = row[1];
+    for (const html of htmlPages) {
+      const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+      let row;
 
-      // Название и ID
-      const titleMatch = block.match(/href="\/torrent\/(\d+)\/[^"]*">([^<]+)<\/a>/);
-      if (!titleMatch) continue;
+      while ((row = rowRegex.exec(html)) !== null) {
+        const block = row[1];
 
-      const id    = titleMatch[1];
-      const title = titleMatch[2].trim();
+        const titleMatch = block.match(/href="\/torrent\/(\d+)\/[^"]*">([^<]+)<\/a>/);
+        if (!titleMatch) continue;
 
-      // Magnet
-      const magnetMatch = block.match(/href="(magnet:\?[^"]+)"/);
-      const magnet = magnetMatch ? magnetMatch[1] : "";
-      const hash   = (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] || "";
+        const id    = titleMatch[1];
+        const title = titleMatch[2].trim();
 
-      // Размер
-      const sizeMatch = block.match(/([\d.,]+)&nbsp;(GB|MB|KB)/i);
-      const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
+        if (seen.has(id)) continue;
+        seen.add(id);
 
-      // Сиды (зелёные) и личеры (красные)
-      const seedMatch = block.match(/<font color="#00b000">(\d+)<\/font>/);
-      const peerMatch = block.match(/<font color="red">(\d+)<\/font>/);
-      const seeders   = seedMatch ? parseInt(seedMatch[1]) : 0;
-      const peers     = peerMatch ? parseInt(peerMatch[1]) : 0;
+        const magnetMatch = block.match(/href="(magnet:\?[^"]+)"/);
+        const magnet = magnetMatch ? magnetMatch[1] : "";
+        const hash   = (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] || "";
 
-      Results.push({
-        Title:       title,
-        Seeders:     seeders,
-        Peers:       peers,
-        Size:        size,
-        Tracker:     "Rutor",
-        MagnetUri:   hash
-          ? `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}`
-          : magnet,
-        Link:        `https://rutor.info/torrent/${id}`,
-        PublishDate: new Date().toISOString(),
-      });
+        const sizeMatch = block.match(/([\d.,]+)&nbsp;(GB|MB|KB)/i);
+        const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
+
+        const seedMatch = block.match(/<font color="#00b000">(\d+)<\/font>/);
+        const peerMatch = block.match(/<font color="red">(\d+)<\/font>/);
+        const seeders   = seedMatch ? parseInt(seedMatch[1]) : 0;
+        const peers     = peerMatch ? parseInt(peerMatch[1]) : 0;
+
+        Results.push({
+          Title:       title,
+          Seeders:     seeders,
+          Peers:       peers,
+          Size:        size,
+          Tracker:     "Rutor",
+          MagnetUri:   hash
+            ? `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}`
+            : magnet,
+          Link:        `https://rutor.info/torrent/${id}`,
+          PublishDate: new Date().toISOString(),
+        });
+      }
     }
+
+    // Сортируем по сидам — живые раздачи вверху
+    Results.sort((a, b) => b.Seeders - a.Seeders);
 
     return jsonResponse({ Results, Indexers: [] });
   }
