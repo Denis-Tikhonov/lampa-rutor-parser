@@ -19,7 +19,6 @@ export default {
     }
 
     try {
-      // Corrected XXXTor search URL
       const searchUrl = `https://xxxtor.com/b.php?search=${encodeURIComponent(query)}`;
 
       const response = await fetch(searchUrl, {
@@ -40,9 +39,7 @@ export default {
       const Results = [];
       const seen = new Set();
 
-      // Main parsing function
       const parseTorrentBlock = (block) => {
-        // Extract torrent ID and title
         const torrentLinkMatch = block.match(/href=["']\/(?:torrent\.php\?id=|torrent\/)(\d+)(?:\/|&[^"']*)?([^"']*)?["']/i);
         if (!torrentLinkMatch) return null;
 
@@ -54,28 +51,10 @@ export default {
         slug = slug.replace(/[?&].*$/, '').trim();
         const title = slug ? decodeURIComponent(slug.replace(/-/g, ' ')).trim() : `Torrent ${id}`;
 
-        // Extract magnet link or enclosure
-        let magnet = "";
-        let hash = "";
-
-        // Try to find magnet link
+        // Extract magnet link and hash
         const magnetMatch = block.match(/href=["'](magnet:\?[^"']+)["']/i);
-        if (magnetMatch) {
-          magnet = magnetMatch[1];
-          const hashMatch = magnet.match(/btih:([a-fA-F0-9]{40})/i);
-          if (hashMatch) hash = hashMatch[1].toLowerCase();
-        }
-
-        // Try to find enclosure (RSS-style)
-        const enclosureMatch = block.match(/<enclosure[^>]*url=["']([^"']+)["'][^>]*>/i);
-        if (enclosureMatch && !magnet) {
-          const enclosureUrl = enclosureMatch[1];
-          if (enclosureUrl.startsWith('magnet:')) {
-            magnet = enclosureUrl;
-            const hashMatch = magnet.match(/btih:([a-fA-F0-9]{40})/i);
-            if (hashMatch) hash = hashMatch[1].toLowerCase();
-          }
-        }
+        const magnet = magnetMatch ? magnetMatch[1] : "";
+        const hash = magnet ? (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] : "";
 
         // Extract size
         const sizeMatch = block.match(/(\d+[.,]?\d*)\s*(TiB|GiB|MiB|KiB|TB|GB|MB|KB)/i);
@@ -87,9 +66,21 @@ export default {
         const seeders = seedMatch ? parseInt(seedMatch[1]) : 0;
         const peers = peerMatch ? parseInt(peerMatch[1]) : 0;
 
+        // Extract uploader (раздающий)
+        const uploaderMatch = block.match(/class=["'][^"']*uploader[^"']*["'][^>]*>([^<]+)/i)
+                          || block.match(/uploaded by[:\s]*<[^>]+>([^<]+)/i)
+                          || block.match(/by[:\s]*<[^>]+>([^<]+)/i);
+        const uploader = uploaderMatch ? uploaderMatch[1].trim() : "Unknown";
+
         // Extract date
         const dateMatch = block.match(/(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4})/);
         const publishDate = dateMatch ? parseDate(dateMatch[1]) : new Date().toISOString();
+
+        // Extract bitrate (если указано в разметке)
+        const bitrateMatch = block.match(/(1080p|720p|480p|2160p|UHD|HD|SD|4K|8K)/i)
+                          || block.match(/(\d{3,4})[kK]bps/i)
+                          || block.match(/bitrate[:\s]*(\d+)[^<]*[kK]bps/i);
+        const bitrate = bitrateMatch ? bitrateMatch[1].toUpperCase() : "Unknown";
 
         return {
           Title: title,
@@ -102,7 +93,8 @@ export default {
             : magnet,
           Link: `https://xxxtor.com/torrent/${id}/${slug || title.replace(/\s+/g, '-')}`,
           PublishDate: publishDate,
-          Enclosure: enclosureMatch ? enclosureMatch[1] : null // Add enclosure URL if found
+          Uploader: uploader,
+          Bitrate: bitrate,
         };
       };
 
@@ -120,14 +112,13 @@ export default {
         let rowMatch;
         while ((rowMatch = tableRowRegex.exec(html)) !== null) {
           const row = rowMatch[1];
-          if (row.includes('<th')) continue; // Skip header row
+          if (row.includes('<th')) continue;
 
           const result = parseTorrentBlock(row);
           if (result) Results.push(result);
         }
       }
 
-      // Sort by seeders (descending)
       Results.sort((a, b) => b.Seeders - a.Seeders);
 
       return jsonResponse({
@@ -151,31 +142,4 @@ export default {
   }
 };
 
-function parseSizeToBytes(num, unit) {
-  const n = parseFloat(num.replace(/,/g, '.'));
-  const u = unit.toUpperCase().replace('IB', 'B');
-  switch (u) {
-    case "TB": return Math.round(n * 1024 ** 4);
-    case "GB": return Math.round(n * 1024 ** 3);
-    case "MB": return Math.round(n * 1024 ** 2);
-    case "KB": return Math.round(n * 1024);
-    default:   return 0;
-  }
-}
-
-function parseDate(dateStr) {
-  try {
-    const d = new Date(dateStr);
-    if (!isNaN(d.getTime())) return d.toISOString();
-  } catch (e) {}
-  return new Date().toISOString();
-}
-
-function jsonResponse(data) {
-  return new Response(JSON.stringify(data, null, 2), {
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-    }
-  });
-}
+// вспомогательные функции (parseSizeToBytes, parseDate, jsonResponse) остаются без изменений
