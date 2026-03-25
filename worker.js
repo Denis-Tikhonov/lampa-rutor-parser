@@ -4,7 +4,7 @@ export default {
     const query = url.searchParams.get("query");
 
     if (!query) {
-      return new Response(JSON.stringify({ results: [], torrents: [] }), {
+      return new Response(JSON.stringify({ results: [] }), {
         headers: { "Content-Type": "application/json" }
       });
     }
@@ -17,7 +17,7 @@ export default {
       }
     }).then(r => r.text());
 
-    const items = [];
+    const results = [];
 
     const regex = /<item>[\s\S]*?<title>(.*?)<\/title>[\s\S]*?<link>(.*?)<\/link>/g;
     let match;
@@ -29,21 +29,15 @@ export default {
 
       if (!id) continue;
 
-      items.push({
+      results.push({
         title,
-        name: title,               // для модов
         url: link,
         magnet: `magnet:?xt=urn:btih:${id}`,
         quality: title.match(/2160p|1080p|720p|HDRip|BDRip|WEBRip/i)?.[0] || "unknown"
       });
     }
 
-    // Оригинальная Lampa → results
-    // Моды → torrents
-    return new Response(JSON.stringify({
-      results: items,
-      torrents: items
-    }), {
+    return new Response(JSON.stringify({ results }), {
       headers: { "Content-Type": "application/json" }
     });
   }
