@@ -25,7 +25,6 @@ export default {
       return jsonResponse({ Results: [], Indexers: [] });
     }
 
-    // Готовим слова запроса для фильтрации — разбиваем на токены
     const queryTokens = query
       .toLowerCase()
       .replace(/[^a-zа-яё0-9\s]/gi, " ")
@@ -35,14 +34,11 @@ export default {
     const Results = [];
     const seen = new Set();
 
-    // Парсинг таблицы с раздачами
     const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
     let row;
 
     while ((row = rowRegex.exec(htmlPage)) !== null) {
       const block = row[1];
-
-      // Извлечение названия и ссылки
       const titleMatch = block.match(/href="\/t\/(\d+)\/[^"]*">([^<]+)<\/a>/);
       if (!titleMatch) continue;
 
@@ -52,7 +48,6 @@ export default {
       if (seen.has(id)) continue;
       seen.add(id);
 
-      // Фильтрация по совпадению слов запроса
       const titleLower = title.toLowerCase();
       if (queryTokens.length > 0) {
         const matched = queryTokens.filter(token => titleLower.includes(token));
@@ -60,18 +55,15 @@ export default {
         if (matchRatio < 0.5) continue;
       }
 
-      // Извлечение магнета
       const magnetMatch = block.match(/href="(magnet:\?[^"]+)"/);
       const magnet = magnetMatch ? magnetMatch[1] : "";
       const hash = (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] || "";
 
       if (!hash) continue;
 
-      // Извлечение размера
       const sizeMatch = block.match(/([\d.,]+)\s*(GB|MB|KB)/i);
       const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
 
-      // Извлечение сидов и пиров
       const seedMatch = block.match(/(\d+)\s*<img[^>]*seed[^>]*>/i);
       const peerMatch = block.match(/(\d+)\s*<img[^>]*peer[^>]*>/i);
       const seeders = seedMatch ? parseInt(seedMatch[1]) : 0;
