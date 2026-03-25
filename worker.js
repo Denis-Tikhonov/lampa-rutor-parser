@@ -19,27 +19,32 @@ export default {
     let htmlPage;
     try {
       htmlPage = await fetch(`https://xxxtor.com/b.php?search=${encodeURIComponent(query)}`, {
-        headers: { "User-Agent": "Mozilla/5.0" }
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
       }).then(r => r.text());
     } catch (e) {
       return jsonResponse({ Results: [], Indexers: [] });
     }
 
-    const queryTokens = query
-      .toLowerCase()
-      .replace(/[^a-zа-яё0-9\s]/gi, " ")
-      .split(/\s+/)
-      .filter(w => w.length > 2);
-
     const Results = [];
     const seen = new Set();
 
-    const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+    // Извлекаем таблицу с торрентами
+    const tableMatch = htmlPage.match(/<table[^>]*class="torrents_table"[^>]*>([\s\S]*?)<\/table>/i);
+    if (!tableMatch) {
+      return jsonResponse({ Results, Indexers: [] });
+    }
+
+    const tableHtml = tableMatch[1];
+    const rowRegex = /<tr[^>]*class="t-row"[^>]*>([\s\S]*?)<\/tr>/gi;
     let row;
 
-    while ((row = rowRegex.exec(htmlPage)) !== null) {
+    while ((row = rowRegex.exec(tableHtml)) !== null) {
       const block = row[1];
-      const titleMatch = block.match(/href="\/t\/(\d+)\/[^"]*">([^<]+)<\/a>/);
+
+      // Извлекаем название и ID
+      const titleMatch = block.match(/<a[^>]*href="\/t\/(\d+)\/[^"]*"[^>]*>(.*?)<\/a>/i);
       if (!titleMatch) continue;
 
       const id = titleMatch[1];
@@ -48,24 +53,20 @@ export default {
       if (seen.has(id)) continue;
       seen.add(id);
 
-      const titleLower = title.toLowerCase();
-      if (queryTokens.length > 0) {
-        const matched = queryTokens.filter(token => titleLower.includes(token));
-        const matchRatio = matched.length / queryTokens.length;
-        if (matchRatio < 0.5) continue;
-      }
-
-      const magnetMatch = block.match(/href="(magnet:\?[^"]+)"/);
+      // Извлекаем магнет-ссылку
+      const magnetMatch = block.match(/<a[^>]*href="(magnet:\?[^"]+)"[^>]*>/i);
       const magnet = magnetMatch ? magnetMatch[1] : "";
       const hash = (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] || "";
 
       if (!hash) continue;
 
-      const sizeMatch = block.match(/([\d.,]+)\s*(GB|MB|KB)/i);
+      // Извлекаем размер
+      const sizeMatch = block.match(/<td[^>]*class="size"[^>]*>([\d.,]+)\s*(GB|MB|KB)<\/td>/i);
       const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
 
-      const seedMatch = block.match(/(\d+)\s*<img[^>]*seed[^>]*>/i);
-      const peerMatch = block.match(/(\d+)\s*<img[^>]*peer[^>]*>/i);
+      // Извлекаем сиды и пиры
+      const seedMatch = block.match(/<td[^>]*class="seeders"[^>]*>(\d+)<\/td>/i);
+      const peerMatch = block.match(/<td[^>]*class="leechers"[^>]*>(\d+)<\/td>/i);
       const seeders = seedMatch ? parseInt(seedMatch[1]) : 0;
       const peers = peerMatch ? parseInt(peerMatch[1]) : 0;
 
