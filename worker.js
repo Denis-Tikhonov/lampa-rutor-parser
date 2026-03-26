@@ -69,6 +69,10 @@ export default {
 
         if (!hash) continue;
 
+        // Фильтр — только видео форматы
+        const videoKeywords = /\b(mkv|mp4|avi|mov|wmv|ts|m2ts|remux|bluray|blu-ray|bdrip|webrip|webdl|web-dl|hdtv|hdrip|dvdrip|xvid|x264|x265|hevc|h264|h\.264|h265|h\.265|1080p|720p|2160p|4k|uhd)\b/i;
+        if (!videoKeywords.test(title)) continue;
+
         const sizeMatch = block.match(/([\d.,]+)&nbsp;(GB|MB|KB)/i);
         const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
 
