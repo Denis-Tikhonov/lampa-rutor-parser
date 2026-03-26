@@ -1,7 +1,6 @@
 export default {
   async fetch(request) {
     const url = new URL(request.url);
-
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -31,6 +30,8 @@ export default {
       return jsonResponse({ Results: [], Indexers: [] });
     }
 
+    // Готовим слова запроса для фильтрации — разбиваем на токены
+    // Убираем короткие слова (предлоги, артикли) и спецсимволы
     const queryTokens = query
       .toLowerCase()
       .replace(/[^a-zа-яё0-9\s]/gi, " ")
@@ -56,17 +57,20 @@ export default {
         if (seen.has(id)) continue;
         seen.add(id);
 
-        // Фильтр по названию
+        // Фильтрация — проверяем что хотя бы половина слов запроса есть в названии
+        const titleLower = title.toLowerCase();
         if (queryTokens.length > 0) {
-          const titleLower = title.toLowerCase();
-          const matched = queryTokens.filter(t => titleLower.includes(t));
-          if (matched.length / queryTokens.length < 0.5) continue;
+          const matched = queryTokens.filter(token => titleLower.includes(token));
+          const matchRatio = matched.length / queryTokens.length;
+          // Пропускаем если совпало меньше 50% слов запроса
+          if (matchRatio < 0.5) continue;
         }
 
         const magnetMatch = block.match(/href="(magnet:\?[^"]+)"/);
         const magnet = magnetMatch ? magnetMatch[1] : "";
         const hash   = (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] || "";
 
+        // Пропускаем если нет magnet — бесполезная раздача
         if (!hash) continue;
 
         const sizeMatch = block.match(/([\d.,]+)&nbsp;(GB|MB|KB)/i);
