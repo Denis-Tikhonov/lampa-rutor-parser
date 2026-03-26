@@ -19,7 +19,7 @@ export default {
     }
 
     // 🔥 URL поиска — сюда подставляешь любой сайт
-    const searchUrl = `https://rutor.info/rss.php?search=${encodeURIComponent(query)}`;
+    const searchUrl = `https://rutor.org/rss.php?search=${encodeURIComponent(query)}`;
 
     let xml = "";
     try {
