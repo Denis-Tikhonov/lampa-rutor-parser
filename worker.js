@@ -39,8 +39,7 @@ export default {
     // ===================================================
     const RUTOR_CATEGORIES = [1, 2, 4, 5, 10];
 
-    const [rutorPages, nnmHtml] = await Promise.all([
-      // Rutor — несколько категорий параллельно
+    const [rutorPages, nnmBuffer] = await Promise.all([
       Promise.all(
         RUTOR_CATEGORIES.map(cat =>
           fetch(`https://rutor.info/search/0/0/0${cat}0/0/${encodeURIComponent(query)}`, {
@@ -48,11 +47,16 @@ export default {
           }).then(r => r.text()).catch(() => "")
         )
       ),
-      // NNMClub — один запрос
+      // NNMClub отдаёт Windows-1251 — получаем как ArrayBuffer
       fetch(`https://nnmclub.to/forum/tracker.php?nm=${encodeURIComponent(query)}`, {
         headers: { "User-Agent": "Mozilla/5.0" }
-      }).then(r => r.text()).catch(() => "")
+      }).then(r => r.arrayBuffer()).catch(() => null)
     ]);
+
+    // Декодируем NNMClub из Windows-1251 в UTF-8
+    const nnmHtml = nnmBuffer
+      ? new TextDecoder("windows-1251").decode(nnmBuffer)
+      : "";
 
     const Results = [];
     const seen = new Set();
@@ -105,15 +109,16 @@ export default {
     }
 
     // ===================================================
-    // ПАРСИНГ NNMCLUB
+    // ПАРСИНГ NNMCLUB — сбор ID раздач
     // ===================================================
+    const nnmItems = []; // { id, title, size, seeders, peers }
+
     const nnmRowRegex = /<tr class="p?row[12]">([\s\S]*?)<\/tr>/g;
     let nnmRow;
 
     while ((nnmRow = nnmRowRegex.exec(nnmHtml)) !== null) {
       const block = nnmRow[1];
 
-      // Название и ID темы
       const titleMatch = block.match(/href="viewtopic\.php\?t=(\d+)"><b>([^<]+)<\/b>/);
       if (!titleMatch) continue;
 
@@ -126,30 +131,56 @@ export default {
 
       if (!passFilters(title, queryTokens, videoKeywords)) continue;
 
-      // Ссылка на скачивание .torrent (magnet на NNMClub только на странице раздачи)
-      const dlMatch = block.match(/href="download\.php\?id=(\d+)"/);
-      const torrentLink = dlMatch
-        ? `https://nnmclub.to/forum/download.php?id=${dlMatch[1]}`
-        : "";
-
-      // Размер: <u>38686669756</u> 36 GB
       const sizeMatch = block.match(/<u>\d+<\/u>\s*([\d.,]+)\s*(GB|MB|KB)/i);
       const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
 
-      // Сиды: class="seedmed"
       const seedMatch = block.match(/class="seedmed"><b>(\d+)<\/b>/);
-      // Личеры: class="leechmed"
       const peerMatch = block.match(/class="leechmed"><b>(\d+)<\/b>/);
 
-      // На NNMClub magnet только на странице раздачи — используем Link
+      nnmItems.push({
+        id,
+        title,
+        size,
+        seeders: seedMatch ? parseInt(seedMatch[1]) : 0,
+        peers:   peerMatch ? parseInt(peerMatch[1]) : 0,
+      });
+    }
+
+    // ===================================================
+    // ДОП. ЗАПРОСЫ НА СТРАНИЦЫ NNMCLUB — получаем magnet
+    // Параллельно для всех найденных раздач
+    // ===================================================
+    const nnmMagnets = await Promise.all(
+      nnmItems.map(item =>
+        fetch(`https://nnmclub.to/forum/viewtopic.php?t=${item.id}`, {
+          headers: { "User-Agent": "Mozilla/5.0" }
+        })
+          .then(r => r.arrayBuffer())
+          .then(buf => {
+            const html = new TextDecoder("windows-1251").decode(buf);
+            const m = html.match(/href="(magnet:\?xt=urn:btih:[a-fA-F0-9]+[^"]*)"/i);
+            return m ? m[1] : "";
+          })
+          .catch(() => "")
+      )
+    );
+
+    // Собираем NNMClub результаты с magnet
+    for (let i = 0; i < nnmItems.length; i++) {
+      const item   = nnmItems[i];
+      const magnet = nnmMagnets[i];
+      const hash   = (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] || "";
+
+      if (!hash) continue; // без magnet не добавляем
+
       Results.push({
-        Title:       title,
-        Seeders:     seedMatch ? parseInt(seedMatch[1]) : 0,
-        Peers:       peerMatch ? parseInt(peerMatch[1]) : 0,
-        Size:        size,
+        Title:       item.title,
+        Seeders:     item.seeders,
+        Peers:       item.peers,
+        Size:        item.size,
         Tracker:     "NNMClub",
-        MagnetUri:   "",         // magnet получается только со страницы раздачи
-        Link:        `https://nnmclub.to/forum/viewtopic.php?t=${id}`,
+        MagnetUri:   `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}`,
+        Link:        `https://nnmclub.to/forum/viewtopic.php?t=${item.id}`,
         PublishDate: new Date().toISOString(),
       });
     }
