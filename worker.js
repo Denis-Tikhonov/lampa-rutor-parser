@@ -85,3 +85,32 @@ export default {
           Size:        size,
           Tracker:     "Rutor",
           MagnetUri:   `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}`,
+          Link:        `https://rutor.info/torrent/${id}`,
+          PublishDate: new Date().toISOString(),
+        });
+      }
+    }
+
+    Results.sort((a, b) => b.Seeders - a.Seeders);
+    return jsonResponse({ Results, Indexers: [] });
+  }
+};
+
+function parseSizeToBytes(num, unit) {
+  const n = parseFloat(num.replace(",", "."));
+  switch (unit.toUpperCase()) {
+    case "GB": return Math.round(n * 1024 ** 3);
+    case "MB": return Math.round(n * 1024 ** 2);
+    case "KB": return Math.round(n * 1024);
+    default:   return 0;
+  }
+}
+
+function jsonResponse(data) {
+  return new Response(JSON.stringify(data), {
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+    }
+  });
+}
