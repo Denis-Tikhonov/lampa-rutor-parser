@@ -19,8 +19,8 @@ export default {
     }
 
     // 🔥 URL поиска — сюда подставляешь любой сайт
-    const searchUrl = `https://rutor.org/rss.php?search=${encodeURIComponent(query)}`;
-
+   const searchUrl = `https://rutor.is/rss.php?search=${encodeURIComponent(query)}`;
+    
     let xml = "";
     try {
       xml = await fetch(searchUrl, {
