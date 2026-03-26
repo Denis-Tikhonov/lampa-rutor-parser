@@ -2,7 +2,6 @@ export default {
   async fetch(request) {
     const url = new URL(request.url);
 
-    // CORS
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -18,92 +17,92 @@ export default {
       return jsonResponse({ Results: [], Indexers: [] });
     }
 
-    // 🔥 URL поиска — сюда подставляешь любой сайт
-   const searchUrl = `https://rutor.org/rss.php?search=${encodeURIComponent(query)}`;
-    
-    let xml = "";
+    const categories = [1, 2, 4, 5, 10];
+    let htmlPages = [];
     try {
-      xml = await fetch(searchUrl, {
-        headers: { "User-Agent": "Mozilla/5.0" }
-      }).then(r => r.text());
+      htmlPages = await Promise.all(
+        categories.map(cat =>
+          fetch(`https://rutor.info/search/0/0/0${cat}0/0/${encodeURIComponent(query)}`, {
+            headers: { "User-Agent": "Mozilla/5.0" }
+          }).then(r => r.text())
+        )
+      );
     } catch (e) {
       return jsonResponse({ Results: [], Indexers: [] });
     }
 
+    const queryTokens = query
+      .toLowerCase()
+      .replace(/[^a-zа-яё0-9\s]/gi, " ")
+      .split(/\s+/)
+      .filter(w => w.length > 2);
+
     const Results = [];
-    const itemRegex = /<item>([\s\S]*?)<\/item>/g;
-    let item;
+    const seen = new Set();
 
-    while ((item = itemRegex.exec(xml)) !== null) {
-      const block = item[1];
+    for (const html of htmlPages) {
+      const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+      let row;
 
-      const title = extractTag(block, "title");
-      const link  = extractTag(block, "link");
+      while ((row = rowRegex.exec(html)) !== null) {
+        const block = row[1];
 
-      if (!title) continue;
+        const titleMatch = block.match(/href="\/torrent\/(\d+)\/[^"]*">([^<]+)<\/a>/);
+        if (!titleMatch) continue;
 
-      // magnet из RSS
-      const magnet = (block.match(/magnet:\?[^"<\s]+/) || [])[0] || "";
-      const hash = (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] || "";
+        const id    = titleMatch[1];
+        const title = titleMatch[2].trim();
 
-      // качество
-      const quality = detectQuality(title);
+        if (seen.has(id)) continue;
+        seen.add(id);
 
-      // размер (RSS rutor не даёт — ставим 0)
-      const size = 0;
+        // Фильтр по названию
+        if (queryTokens.length > 0) {
+          const titleLower = title.toLowerCase();
+          const matched = queryTokens.filter(t => titleLower.includes(t));
+          if (matched.length / queryTokens.length < 0.5) continue;
+        }
 
-      // сиды (RSS rutor не даёт — ставим 0)
-      const seeders = 0;
+        const magnetMatch = block.match(/href="(magnet:\?[^"]+)"/);
+        const magnet = magnetMatch ? magnetMatch[1] : "";
+        const hash   = (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] || "";
 
-      Results.push({
-        Title: title,
-        MagnetUri: hash
-          ? `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}`
-          : magnet,
-        Seeders: seeders,
-        Size: size,
-        Tracker: "Rutor",
-        PublishDate: new Date().toISOString(),
-        Quality: quality
-      });
+        if (!hash) continue;
+
+        const sizeMatch = block.match(/([\d.,]+)&nbsp;(GB|MB|KB)/i);
+        const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
+
+        const seedMatch = block.match(/<font color="#00b000">(\d+)<\/font>/);
+        const peerMatch = block.match(/<font color="red">(\d+)<\/font>/);
+        const seeders   = seedMatch ? parseInt(seedMatch[1]) : 0;
+        const peers     = peerMatch ? parseInt(peerMatch[1]) : 0;
+
+        Results.push({
+          Title:       title,
+          Seeders:     seeders,
+          Peers:       peers,
+          Size:        size,
+          Tracker:     "Rutor",
+          MagnetUri:   `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}`,
+          Link:        `https://rutor.info/torrent/${id}`,
+          PublishDate: new Date().toISOString(),
+        });
+      }
     }
 
-    // 🔥 сортировка по качеству
-    Results.sort((a, b) => qualityRank(b.Quality) - qualityRank(a.Quality));
-
-    return jsonResponse({
-      Results,
-      Indexers: ["Rutor"]
-    });
+    Results.sort((a, b) => b.Seeders - a.Seeders);
+    return jsonResponse({ Results, Indexers: [] });
   }
 };
 
-// -----------------------------
-// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-// -----------------------------
-
-function detectQuality(t) {
-  return (t.match(/2160p|4K|1080p|720p|WEBRip|BDRip|HDRip/i) || ["unknown"])[0];
-}
-
-function qualityRank(q) {
-  const order = ["2160p", "4K", "1080p", "720p", "WEBRip", "BDRip", "HDRip", "unknown"];
-  const i = order.indexOf(q);
-  return i === -1 ? order.length : i;
-}
-
-function extractTag(str, tag) {
-  const m = str.match(new RegExp(`<${tag}[^>]*><!\
-
-\[CDATA\
-
-\[([\\s\\S]*?)\\]
-
-\\]
-
-><\\/${tag}>`, "i"))
-    || str.match(new RegExp(`<${tag}[^>]*>([^<]*)<\\/${tag}>`, "i"));
-  return m ? m[1].trim() : "";
+function parseSizeToBytes(num, unit) {
+  const n = parseFloat(num.replace(",", "."));
+  switch (unit.toUpperCase()) {
+    case "GB": return Math.round(n * 1024 ** 3);
+    case "MB": return Math.round(n * 1024 ** 2);
+    case "KB": return Math.round(n * 1024);
+    default:   return 0;
+  }
 }
 
 function jsonResponse(data) {
