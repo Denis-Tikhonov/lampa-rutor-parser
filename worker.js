@@ -35,11 +35,12 @@ export default {
     const videoKeywords = /\b(mkv|mp4|avi|mov|wmv|ts|m2ts|remux|bluray|blu-ray|bdrip|webrip|webdl|web-dl|hdtv|hdrip|dvdrip|xvid|x264|x265|hevc|h264|h\.264|h265|h\.265|1080p|720p|2160p|4k|uhd|av1)\b/i;
 
     // ===================================================
-    // ПАРАЛЛЕЛЬНЫЕ ЗАПРОСЫ К ОБОИМ САЙТАМ
+    // ПАРАЛЛЕЛЬНЫЕ ЗАПРОСЫ К ВСЕМ ТРЕКЕРАМ
     // ===================================================
     const RUTOR_CATEGORIES = [1, 2, 4, 5, 10];
 
-    const [rutorPages, nnmBuffer] = await Promise.all([
+    const [rutorPages, nnmBuffer, xxxtorResponse] = await Promise.all([
+      // Rutor
       Promise.all(
         RUTOR_CATEGORIES.map(cat =>
           fetch(`https://rutor.info/search/0/0/0${cat}0/0/${encodeURIComponent(query)}`, {
@@ -47,10 +48,19 @@ export default {
           }).then(r => r.text()).catch(() => "")
         )
       ),
-      // NNMClub отдаёт Windows-1251 — получаем как ArrayBuffer
+      // NNMClub
       fetch(`https://nnmclub.to/forum/tracker.php?nm=${encodeURIComponent(query)}`, {
         headers: { "User-Agent": "Mozilla/5.0" }
-      }).then(r => r.arrayBuffer()).catch(() => null)
+      }).then(r => r.arrayBuffer()).catch(() => null),
+      // XXXTor
+      fetch(`https://xxxtor.com/b.php?search=${encodeURIComponent(query)}`, {
+        headers: { 
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.5",
+          "Referer": "https://xxxtor.com/",
+        }
+      }).then(r => r.ok ? r.text() : "").catch(() => "")
     ]);
 
     // Декодируем NNMClub из Windows-1251 в UTF-8
@@ -111,7 +121,7 @@ export default {
     // ===================================================
     // ПАРСИНГ NNMCLUB — сбор ID раздач
     // ===================================================
-    const nnmItems = []; // { id, title, size, seeders, peers }
+    const nnmItems = [];
 
     const nnmRowRegex = /<tr class="p?row[12]">([\s\S]*?)<\/tr>/g;
     let nnmRow;
@@ -148,7 +158,6 @@ export default {
 
     // ===================================================
     // ДОП. ЗАПРОСЫ НА СТРАНИЦЫ NNMCLUB — получаем magnet
-    // Параллельно для всех найденных раздач
     // ===================================================
     const nnmMagnets = await Promise.all(
       nnmItems.map(item =>
@@ -171,7 +180,7 @@ export default {
       const magnet = nnmMagnets[i];
       const hash   = (magnet.match(/btih:([a-fA-F0-9]{40})/i) || [])[1] || "";
 
-      if (!hash) continue; // без magnet не добавляем
+      if (!hash) continue;
 
       Results.push({
         Title:       item.title,
@@ -186,11 +195,151 @@ export default {
     }
 
     // ===================================================
+    // ПАРСИНГ XXXTOR
+    // ===================================================
+    if (xxxtorResponse) {
+      const xxxtorHtml = xxxtorResponse;
+      
+      // Парсим результаты поиска XXXTor
+      const torrentRegex = /href=["']\/(?:torrent\.php\?id=|torrent\/)(\d+)(?:\/|&[^"']*)?([^"']*)?["']/gi;
+      
+      let match;
+      while ((match = torrentRegex.exec(xxxtorHtml)) !== null) {
+        const id = match[1];
+        let slug = match[2] || "";
+        slug = slug.replace(/[?&].*$/, '').trim();
+        
+        const key = `xxxtor_${id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        // Формируем название
+        let title = "";
+        if (slug) {
+          title = decodeURIComponent(slug.replace(/-/g, ' ')).trim();
+        }
+        
+        // Ищем в ближайшем блоке
+        const searchStart = Math.max(0, match.index - 1500);
+        const searchEnd = Math.min(xxxtorHtml.length, match.index + 1500);
+        const block = xxxtorHtml.substring(searchStart, searchEnd);
+
+        if (!title) {
+          const titleMatch = block.match(/<a[^>]*href=["'][^"']*torrent[^"']*["'][^>]*>([^<]+)<\/a>/i)
+                          || block.match(/title=["']([^"']+)["']/i)
+                          || block.match(/class=["'][^"']*title[^"']*["'][^>]*>([^<]+)/i);
+          title = titleMatch ? titleMatch[1].trim() : `Torrent ${id}`;
+        }
+
+        // Пропускаем если не проходит фильтры
+        if (!passFilters(title, queryTokens, videoKeywords)) continue;
+
+        // Ищем magnet ссылку
+        const magnetMatch = block.match(/href=["'](magnet:\?[^"']+)["']/i)
+                         || xxxtorHtml.match(new RegExp(`href=["'](magnet:\\?[^"']*${id}[^"']*)["']`, 'i'));
+        const magnet = magnetMatch ? magnetMatch[1] : "";
+        
+        // Извлекаем hash
+        let hash = "";
+        if (magnet) {
+          const hashMatch = magnet.match(/btih:([a-fA-F0-9]{40})/i);
+          if (hashMatch) hash = hashMatch[1].toLowerCase();
+        }
+
+        // Ищем размер файла
+        const sizeMatch = block.match(/(\d+[.,]?\d*)\s*(TiB|GiB|MiB|KiB|TB|GB|MB|KB)/i)
+                       || block.match(/size[^>]*>(\d+[.,]?\d*)\s*(TiB|GiB|MiB|KiB|TB|GB|MB|KB)/i);
+        const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
+
+        // Ищем сиды и пиры
+        const seedMatch = block.match(/class=["'][^"']*seed[^"']*["'][^>]*>(\d+)/i)
+                       || block.match(/seed[^>]*>(\d+)/i)
+                       || block.match(/[↑↗]\s*(\d+)/);
+        
+        const peerMatch = block.match(/class=["'][^"']*leech[^"']*["'][^>]*>(\d+)/i)
+                       || block.match(/leech[^>]*>(\d+)/i)
+                       || block.match(/[↓↘]\s*(\d+)/);
+
+        const seeders = seedMatch ? parseInt(seedMatch[1]) : 0;
+        const peers = peerMatch ? parseInt(peerMatch[1]) : 0;
+
+        // Ищем дату
+        const dateMatch = block.match(/(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4})/)
+                       || block.match(/(\d{4}[\/\-\.]\d{2}[\/\-\.]\d{2})/)
+                       || block.match(/added[:\s]*([^<]+)/i);
+        const publishDate = dateMatch ? parseDate(dateMatch[1]) : new Date().toISOString();
+
+        Results.push({
+          Title:       title,
+          Seeders:     seeders,
+          Peers:       peers,
+          Size:        size,
+          Tracker:     "XXXTor",
+          MagnetUri:   hash
+            ? `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}`
+            : magnet,
+          Link:        `https://xxxtor.com/torrent/${id}/${slug || title.replace(/\s+/g, '-').substring(0, 50)}`,
+          PublishDate: publishDate,
+        });
+      }
+
+      // Альтернативный парсинг через table rows
+      if (Results.filter(r => r.Tracker === "XXXTor").length === 0) {
+        const trRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+        let trMatch;
+        
+        while ((trMatch = trRegex.exec(xxxtorHtml)) !== null) {
+          const row = trMatch[1];
+          if (row.includes('<th')) continue;
+          
+          const linkMatch = row.match(/href=["']\/(?:torrent\.php\?id=|torrent\/)(\d+)/i);
+          if (!linkMatch) continue;
+          
+          const id = linkMatch[1];
+          const key = `xxxtor_${id}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          
+          const cells = row.match(/<td[^>]*>([\s\S]*?)<\/td>/gi) || [];
+          const titleCell = cells[0] || "";
+          const sizeCell = cells[1] || "";
+          const seedCell = cells[2] || "";
+          const peerCell = cells[3] || "";
+          
+          const titleMatch = titleCell.match(/>([^<]+)<\/a>/);
+          const title = titleMatch ? titleMatch[1].trim() : `Torrent ${id}`;
+          
+          if (!passFilters(title, queryTokens, videoKeywords)) continue;
+          
+          const sizeMatch = sizeCell.match(/(\d+[.,]?\d*)\s*(TiB|GiB|MiB|KiB|TB|GB|MB|KB)/i);
+          const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
+          
+          const seeders = parseInt(seedCell.replace(/<[^>]+>/g, '').trim()) || 0;
+          const peers = parseInt(peerCell.replace(/<[^>]+>/g, '').trim()) || 0;
+          
+          Results.push({
+            Title:       title,
+            Seeders:     seeders,
+            Peers:       peers,
+            Size:        size,
+            Tracker:     "XXXTor",
+            MagnetUri:   "",
+            Link:        `https://xxxtor.com/torrent/${id}`,
+            PublishDate: new Date().toISOString(),
+          });
+        }
+      }
+    }
+
+    // ===================================================
     // СОРТИРОВКА по сидам
     // ===================================================
     Results.sort((a, b) => b.Seeders - a.Seeders);
 
-    return jsonResponse({ Results, Indexers: ["Rutor", "NNMClub"] });
+    return jsonResponse({ 
+      Results, 
+      Indexers: ["Rutor", "NNMClub", "XXXTor"] 
+    });
   }
 };
 
@@ -206,6 +355,7 @@ function passFilters(title, queryTokens, videoKeywords) {
   }
   return true;
 }
+
 
 // ===================================================
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
