@@ -72,8 +72,9 @@ export default {
         const sizeMatch = block.match(/([\d.,]+)&nbsp;(GB|MB|KB)/i);
         const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
 
-        const seedMatch = block.match(/<font color="#00b000">(\d+)<\/font>/);
-        const peerMatch = block.match(/<font color="red">(\d+)<\/font>/);
+        // Исправленные regex для классов .green и .red
+        const seedMatch = block.match(/<[^>]*class="green"[^>]*>(\d+)<\/[^>]+>/);
+        const peerMatch = block.match(/<[^>]*class="red"[^>]*>(\d+)<\/[^>]+>/);
         const seeders   = seedMatch ? parseInt(seedMatch[1]) : 0;
         const peers     = peerMatch ? parseInt(peerMatch[1]) : 0;
 
@@ -84,32 +85,3 @@ export default {
           Size:        size,
           Tracker:     "Rutor",
           MagnetUri:   `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}`,
-          Link:        `https://rutor.info/torrent/${id}`,
-          PublishDate: new Date().toISOString(),
-        });
-      }
-    }
-
-    Results.sort((a, b) => b.Seeders - a.Seeders);
-    return jsonResponse({ Results, Indexers: [] });
-  }
-};
-
-function parseSizeToBytes(num, unit) {
-  const n = parseFloat(num.replace(",", "."));
-  switch (unit.toUpperCase()) {
-    case "GB": return Math.round(n * 1024 ** 3);
-    case "MB": return Math.round(n * 1024 ** 2);
-    case "KB": return Math.round(n * 1024);
-    default:   return 0;
-  }
-}
-
-function jsonResponse(data) {
-  return new Response(JSON.stringify(data), {
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-    }
-  });
-}
