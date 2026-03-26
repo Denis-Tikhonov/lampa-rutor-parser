@@ -3,18 +3,44 @@ export default {
     const url = new URL(request.url);
 
     // ===================================================
-    // CORS
+    // DEBUG ENDPOINT - ВРЕМЕННЫЙ
     // ===================================================
-    if (request.method === "OPTIONS") {
-      return new Response(null, {
+    if (url.searchParams.get("debug") === "leporno") {
+      const query = url.searchParams.get("query") || "2024";
+      
+      const lepornoHtml = await fetch(`https://leporno.de/search.php`, {
+        method: 'POST',
+        headers: { 
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Referer": "https://leporno.de/search.php",
+          "Origin": "https://leporno.de"
+        },
+        body: new URLSearchParams({
+          'keywords': query,
+          'terms': 'all',
+          'author': '',
+          'sc': '1',
+          'sf': 'all',
+          'sr': 'topics',
+          'sk': 't',
+          'sd': 'd',
+          'st': '0',
+          'ch': '300',
+          'submit': 'Поиск'
+        }).toString()
+      }).then(r => r.text()).catch(err => `Error: ${err.message}`);
+      
+      return new Response(lepornoHtml, {
         headers: {
+          "Content-Type": "text/html; charset=utf-8",
           "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, OPTIONS",
-          "Access-Control-Allow-Headers": "*",
         }
       });
     }
 
+    // ... остальной код как раньше ...
     const query = url.searchParams.get("Query") || url.searchParams.get("query");
     if (!query) {
       return jsonResponse({ Results: [], Indexers: [] });
