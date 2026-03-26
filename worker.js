@@ -73,8 +73,8 @@ export default {
         const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
 
         // Исправленные regex для классов .green и .red
-        const seedMatch = block.match(/<[^>]*class="green"[^>]*>(\d+)<\/[^>]+>/);
-        const peerMatch = block.match(/<[^>]*class="red"[^>]*>(\d+)<\/[^>]+>/);
+        const seedMatch = block.match(/<span class="green">[\s\S]*?&nbsp;(\d+)<\/span>/);
+        const peerMatch = block.match(/<span class="red">[\s\S]*?&nbsp;(\d+)<\/span>/);
         const seeders   = seedMatch ? parseInt(seedMatch[1]) : 0;
         const peers     = peerMatch ? parseInt(peerMatch[1]) : 0;
 
