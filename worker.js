@@ -168,157 +168,255 @@ export default {
       }
 
       // ===================================================
-      // ПАРСИНГ XXXTor - УЛУЧШЕННЫЙ
+      // ПАРСИНГ XXXTor - ПОЛНОСТЬЮ ПЕРЕРАБОТАННЫЙ
       // ===================================================
       if (xxxtorHtml && xxxtorHtml.length > 100) {
         console.log("XXXTor HTML length:", xxxtorHtml.length);
         
-        // Множественные стратегии парсинга
         let xxxtorCount = 0;
 
-        // СТРАТЕГИЯ 1: Поиск всех ссылок на торренты
-        const torrentLinkRegex = /href=["'](\/torrent\/(\d+)(?:\/([^"']*))?)["'][^>]*>([^<]*)<\/a>/gi;
-        let linkMatch;
+        // Ищем таблицу с результатами поиска
+        // XXXTor обычно использует структуру: <tr> с несколькими <td>
+        const tableRegex = /<table[^>]*class=["'][^"']*torrent[^"']*["'][^>]*>([\s\S]*?)<\/table>/gi;
+        let tableMatch = tableRegex.exec(xxxtorHtml);
         
-        while ((linkMatch = torrentLinkRegex.exec(xxxtorHtml)) !== null) {
-          const fullPath = linkMatch[1];
-          const id = linkMatch[2];
-          const slug = linkMatch[3] || "";
-          let title = linkMatch[4].trim();
-          
-          // Декодируем HTML entities
-          title = title.replace(/&quot;/g, '"')
-                      .replace(/&amp;/g, '&')
-                      .replace(/&lt;/g, '<')
-                      .replace(/&gt;/g, '>')
-                      .replace(/&#(\d+);/g, (m, code) => String.fromCharCode(code));
-          
-          if (!title && slug) {
-            title = decodeURIComponent(slug.replace(/-/g, ' ')).trim();
+        // Если не нашли таблицу с классом torrent, ищем любую таблицу после поиска
+        if (!tableMatch) {
+          const allTablesRegex = /<table[^>]*>([\s\S]*?)<\/table>/gi;
+          let tempMatch;
+          while ((tempMatch = allTablesRegex.exec(xxxtorHtml)) !== null) {
+            // Проверяем, содержит ли таблица ссылки на торренты
+            if (tempMatch[1].includes('/torrent/')) {
+              tableMatch = tempMatch;
+              break;
+            }
           }
-          
-          if (!title || title.length < 3) continue;
-          if (seen.has(`xxxtor_${id}`)) continue;
-          
-          // Извлекаем окружающий блок для доп. информации
-          const contextStart = Math.max(0, linkMatch.index - 2000);
-          const contextEnd = Math.min(xxxtorHtml.length, linkMatch.index + 2000);
-          const context = xxxtorHtml.substring(contextStart, contextEnd);
-          
-          // Ищем размер в контексте
-          const sizeMatch = context.match(/(\d+[.,]?\d*)\s*(TiB|GiB|MiB|KiB|TB|GB|MB|KB)/i);
-          const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
-          
-          // Ищем сиды/пиры (разные варианты)
-          const seedMatch = context.match(/(?:seed|↑)[^\d]*(\d+)/i)
-                         || context.match(/class=["'][^"']*seed[^"']*["'][^>]*>(\d+)/i);
-          const peerMatch = context.match(/(?:leech|peer|↓)[^\d]*(\d+)/i)
-                         || context.match(/class=["'][^"']*leech[^"']*["'][^>]*>(\d+)/i);
-          
-          const seeders = seedMatch ? parseInt(seedMatch[1]) : 0;
-          const peers = peerMatch ? parseInt(peerMatch[1]) : 0;
-          
-          // Ищем magnet в контексте
-          const magnetMatch = context.match(/href=["'](magnet:\?xt=urn:btih:([a-fA-F0-9]{40})[^"']*)["']/i);
-          const magnet = magnetMatch ? magnetMatch[1] : "";
-          const hash = magnetMatch ? magnetMatch[2].toLowerCase() : "";
-          
-          seen.add(`xxxtor_${id}`);
-          xxxtorCount++;
-          
-          Results.push({
-            Title: title,
-            Seeders: seeders,
-            Peers: peers,
-            Size: size,
-            Tracker: "XXXTor",
-            MagnetUri: hash ? `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}&tr=udp://tracker.openbittorrent.com:80` : magnet,
-            Link: `https://xxxtor.com${fullPath}`,
-            PublishDate: new Date().toISOString(),
-          });
         }
 
-        // СТРАТЕГИЯ 2: Парсинг таблиц (если первая не сработала)
-        if (xxxtorCount === 0) {
-          console.log("XXXTor: trying table parsing");
-          const tableRegex = /<table[^>]*>([\s\S]*?)<\/table>/gi;
-          let tableMatch;
+        if (tableMatch) {
+          const tableContent = tableMatch[1];
+          console.log("XXXTor: found table, length:", tableContent.length);
+
+          // Парсим строки таблицы
+          const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+          let rowMatch;
           
-          while ((tableMatch = tableRegex.exec(xxxtorHtml)) !== null) {
-            const tableContent = tableMatch[1];
-            const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-            let rowMatch;
+          while ((rowMatch = rowRegex.exec(tableContent)) !== null) {
+            const row = rowMatch[1];
             
-            while ((rowMatch = rowRegex.exec(tableContent)) !== null) {
-              const row = rowMatch[1];
-              if (row.includes('<th')) continue;
+            // Пропускаем заголовки
+            if (row.includes('<th') || row.includes('thead')) continue;
+            
+            // Извлекаем все ячейки
+            const cells = [];
+            const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+            let cellMatch;
+            
+            while ((cellMatch = cellRegex.exec(row)) !== null) {
+              cells.push(cellMatch[1].trim());
+            }
+            
+            if (cells.length < 3) continue;
+            
+            // Обычная структура XXXTor:
+            // cells[0] или [1] - название с ссылкой
+            // одна из ячеек - размер (содержит GB/MB)
+            // одна из ячеек - сиды (обычно зеленое число)
+            // одна из ячеек - пиры (обычно красное число)
+            
+            // Ищем ячейку с названием и ID
+            let id = "";
+            let title = "";
+            let titleCellIndex = -1;
+            
+            for (let i = 0; i < cells.length; i++) {
+              const linkMatch = cells[i].match(/href=["']\/torrent\/(\d+)(?:\/([^"']*))?["'][^>]*>([^<]*)<\/a>/i);
+              if (linkMatch) {
+                id = linkMatch[1];
+                const slug = linkMatch[2] || "";
+                title = linkMatch[3].trim();
+                
+                // Если название пустое, берем из slug
+                if (!title && slug) {
+                  title = decodeURIComponent(slug.replace(/-/g, ' ')).trim();
+                }
+                
+                // Декодируем HTML entities
+                title = title.replace(/&quot;/g, '"')
+                            .replace(/&amp;/g, '&')
+                            .replace(/&lt;/g, '<')
+                            .replace(/&gt;/g, '>')
+                            .replace(/&#(\d+);/g, (m, code) => String.fromCharCode(code))
+                            .replace(/<[^>]+>/g, ''); // удаляем оставшиеся теги
+                
+                titleCellIndex = i;
+                break;
+              }
+            }
+            
+            if (!id || !title) continue;
+            if (seen.has(`xxxtor_${id}`)) continue;
+            seen.add(`xxxtor_${id}`);
+            
+            // Ищем размер во всех ячейках
+            let size = 0;
+            for (const cell of cells) {
+              const cleanCell = cell.replace(/<[^>]+>/g, '');
+              const sizeMatch = cleanCell.match(/(\d+[.,]?\d*)\s*(TiB|GiB|MiB|KiB|TB|GB|MB|KB)/i);
+              if (sizeMatch) {
+                size = parseSizeToBytes(sizeMatch[1], sizeMatch[2]);
+                console.log(`XXXTor: found size ${sizeMatch[1]} ${sizeMatch[2]} = ${size} bytes`);
+                break;
+              }
+            }
+            
+            // Ищем сиды и пиры
+            let seeders = 0;
+            let peers = 0;
+            
+            for (let i = 0; i < cells.length; i++) {
+              if (i === titleCellIndex) continue;
               
-              const cells = [];
-              const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
-              let cellMatch;
-              while ((cellMatch = cellRegex.exec(row)) !== null) {
-                cells.push(cellMatch[1]);
+              const cleanCell = cells[i].replace(/<[^>]+>/g, '').trim();
+              const num = parseInt(cleanCell);
+              
+              if (!isNaN(num) && num >= 0) {
+                // Эвристика: обычно сиды идут раньше пиров
+                // Также ищем по цвету или классу
+                if (cells[i].includes('green') || cells[i].includes('seed')) {
+                  seeders = num;
+                  console.log(`XXXTor: found seeders ${num}`);
+                } else if (cells[i].includes('red') || cells[i].includes('leech') || cells[i].includes('peer')) {
+                  peers = num;
+                  console.log(`XXXTor: found peers ${num}`);
+                } else if (seeders === 0) {
+                  seeders = num;
+                } else if (peers === 0) {
+                  peers = num;
+                }
+              }
+            }
+            
+            // Ищем magnet в строке
+            const magnetMatch = row.match(/href=["'](magnet:\?xt=urn:btih:([a-fA-F0-9]{40})[^"']*)["']/i);
+            const magnet = magnetMatch ? magnetMatch[1] : "";
+            const hash = magnetMatch ? magnetMatch[2].toLowerCase() : "";
+            
+            xxxtorCount++;
+            
+            Results.push({
+              Title: title,
+              Seeders: seeders,
+              Peers: peers,
+              Size: size,
+              Tracker: "XXXTor",
+              MagnetUri: hash 
+                ? `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}&tr=udp://tracker.openbittorrent.com:80&tr=udp://tracker.opentrackr.org:1337`
+                : magnet,
+              Link: `https://xxxtor.com/torrent/${id}`,
+              PublishDate: new Date().toISOString(),
+              _debug: {
+                cellCount: cells.length,
+                size: size,
+                seeders: seeders,
+                peers: peers
+              }
+            });
+          }
+          
+          console.log(`XXXTor: parsed ${xxxtorCount} torrents from table`);
+        } else {
+          console.log("XXXTor: table not found, trying alternative parsing");
+          
+          // АЛЬТЕРНАТИВНЫЙ МЕТОД: построчный парсинг всего HTML
+          const lines = xxxtorHtml.split('\n');
+          let currentTorrent = null;
+          
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            
+            // Ищем начало торрента
+            const linkMatch = line.match(/href=["']\/torrent\/(\d+)(?:\/([^"']*))?["'][^>]*>([^<]*)<\/a>/i);
+            if (linkMatch) {
+              if (currentTorrent && currentTorrent.id) {
+                // Сохраняем предыдущий
+                if (!seen.has(`xxxtor_${currentTorrent.id}`)) {
+                  seen.add(`xxxtor_${currentTorrent.id}`);
+                  Results.push({
+                    Title: currentTorrent.title,
+                    Seeders: currentTorrent.seeders,
+                    Peers: currentTorrent.peers,
+                    Size: currentTorrent.size,
+                    Tracker: "XXXTor",
+                    MagnetUri: currentTorrent.magnet,
+                    Link: `https://xxxtor.com/torrent/${currentTorrent.id}`,
+                    PublishDate: new Date().toISOString(),
+                  });
+                  xxxtorCount++;
+                }
               }
               
-              if (cells.length < 2) continue;
+              // Начинаем новый
+              const id = linkMatch[1];
+              let title = linkMatch[3].trim();
+              if (!title && linkMatch[2]) {
+                title = decodeURIComponent(linkMatch[2].replace(/-/g, ' ')).trim();
+              }
               
-              const linkInCell = cells[0].match(/href=["']\/torrent\/(\d+)[^"']*["'][^>]*>([^<]+)<\/a>/i);
-              if (!linkInCell) continue;
+              currentTorrent = {
+                id: id,
+                title: title.replace(/&quot;/g, '"').replace(/&amp;/g, '&'),
+                seeders: 0,
+                peers: 0,
+                size: 0,
+                magnet: ""
+              };
+            }
+            
+            // Если есть текущий торрент, ищем его данные в следующих строках
+            if (currentTorrent) {
+              // Размер
+              const sizeMatch = line.match(/(\d+[.,]?\d*)\s*(TiB|GiB|MiB|KiB|TB|GB|MB|KB)/i);
+              if (sizeMatch && currentTorrent.size === 0) {
+                currentTorrent.size = parseSizeToBytes(sizeMatch[1], sizeMatch[2]);
+              }
               
-              const id = linkInCell[1];
-              let title = linkInCell[2].trim();
+              // Сиды
+              const seedMatch = line.match(/(?:seed|green)[^>]*>(\d+)/i);
+              if (seedMatch && currentTorrent.seeders === 0) {
+                currentTorrent.seeders = parseInt(seedMatch[1]);
+              }
               
-              title = title.replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+              // Пиры
+              const peerMatch = line.match(/(?:leech|peer|red)[^>]*>(\d+)/i);
+              if (peerMatch && currentTorrent.peers === 0) {
+                currentTorrent.peers = parseInt(peerMatch[1]);
+              }
               
-              if (seen.has(`xxxtor_${id}`)) continue;
-              seen.add(`xxxtor_${id}`);
-              
-              const sizeMatch = cells[1]?.match(/(\d+[.,]?\d*)\s*(TiB|GiB|MiB|KiB|TB|GB|MB|KB)/i);
-              const seeders = parseInt((cells[2] || "0").replace(/<[^>]+>/g, '').trim()) || 0;
-              const peers = parseInt((cells[3] || "0").replace(/<[^>]+>/g, '').trim()) || 0;
-              
-              xxxtorCount++;
-              
-              Results.push({
-                Title: title,
-                Seeders: seeders,
-                Peers: peers,
-                Size: sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0,
-                Tracker: "XXXTor",
-                MagnetUri: "",
-                Link: `https://xxxtor.com/torrent/${id}`,
-                PublishDate: new Date().toISOString(),
-              });
+              // Magnet
+              const magnetMatch = line.match(/href=["'](magnet:\?xt=urn:btih:([a-fA-F0-9]{40})[^"']*)["']/i);
+              if (magnetMatch && !currentTorrent.magnet) {
+                currentTorrent.magnet = `magnet:?xt=urn:btih:${magnetMatch[2]}&dn=${encodeURIComponent(currentTorrent.title)}`;
+              }
             }
           }
-        }
-
-        console.log(`XXXTor: found ${xxxtorCount} torrents`);
-        
-        // СТРАТЕГИЯ 3: Простой поиск ID торрентов (fallback)
-        if (xxxtorCount === 0) {
-          console.log("XXXTor: trying simple ID extraction");
-          const simpleRegex = /\/torrent\/(\d+)/g;
-          const foundIds = new Set();
-          let simpleMatch;
           
-          while ((simpleMatch = simpleRegex.exec(xxxtorHtml)) !== null) {
-            const id = simpleMatch[1];
-            if (!foundIds.has(id)) {
-              foundIds.add(id);
-              Results.push({
-                Title: `Torrent ${id}`,
-                Seeders: 0,
-                Peers: 0,
-                Size: 0,
-                Tracker: "XXXTor",
-                MagnetUri: "",
-                Link: `https://xxxtor.com/torrent/${id}`,
-                PublishDate: new Date().toISOString(),
-              });
-            }
+          // Сохраняем последний
+          if (currentTorrent && currentTorrent.id && !seen.has(`xxxtor_${currentTorrent.id}`)) {
+            Results.push({
+              Title: currentTorrent.title,
+              Seeders: currentTorrent.seeders,
+              Peers: currentTorrent.peers,
+              Size: currentTorrent.size,
+              Tracker: "XXXTor",
+              MagnetUri: currentTorrent.magnet,
+              Link: `https://xxxtor.com/torrent/${currentTorrent.id}`,
+              PublishDate: new Date().toISOString(),
+            });
+            xxxtorCount++;
           }
-          console.log(`XXXTor: simple extraction found ${foundIds.size} IDs`);
+          
+          console.log(`XXXTor: parsed ${xxxtorCount} torrents via line-by-line`);
         }
 
       } else {
@@ -354,12 +452,12 @@ export default {
 
 function passFilters(title, queryTokens, videoKeywords) {
   const tl = title.toLowerCase();
-  // Для XXXTor можем ослабить фильтр videoKeywords (они не всегда указывают формат)
+  // Для XXXTor ослабляем фильтр по видеоформатам
   // if (!videoKeywords.test(tl)) return false;
   
   if (queryTokens.length > 0) {
     const matched = queryTokens.filter(t => tl.includes(t));
-    if (matched.length / queryTokens.length < 0.3) return false; // понижен порог до 30%
+    if (matched.length / queryTokens.length < 0.3) return false;
   }
   return true;
 }
