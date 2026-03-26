@@ -3,7 +3,7 @@ export default {
     const url = new URL(request.url);
 
     // ===================================================
-    // DEBUG ENDPOINT - ВРЕМЕННЫЙ
+    // DEBUG ENDPOINT - для просмотра HTML LePorno
     // ===================================================
     if (url.searchParams.get("debug") === "leporno") {
       const query = url.searchParams.get("query") || "2024";
@@ -22,12 +22,13 @@ export default {
           'terms': 'all',
           'author': '',
           'sc': '1',
-          'sf': 'all',
+          'sf': 'titleonly',
           'sr': 'topics',
           'sk': 't',
           'sd': 'd',
           'st': '0',
           'ch': '300',
+          'tracker_search': 'torrent',
           'submit': 'Поиск'
         }).toString()
       }).then(r => r.text()).catch(err => `Error: ${err.message}`);
@@ -40,7 +41,19 @@ export default {
       });
     }
 
-    // ... остальной код как раньше ...
+    // ===================================================
+    // CORS
+    // ===================================================
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Headers": "*",
+        }
+      });
+    }
+
     const query = url.searchParams.get("Query") || url.searchParams.get("query");
     if (!query) {
       return jsonResponse({ Results: [], Indexers: [] });
@@ -96,7 +109,7 @@ export default {
         fetch(`https://leporno.de/search.php`, {
           method: 'POST',
           headers: { 
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
@@ -108,12 +121,13 @@ export default {
             'terms': 'all',
             'author': '',
             'sc': '1',
-            'sf': 'all',
+            'sf': 'titleonly',
             'sr': 'topics',
             'sk': 't',
             'sd': 'd',
             'st': '0',
             'ch': '300',
+            'tracker_search': 'torrent',
             'submit': 'Поиск'
           }).toString()
         }).then(async r => {
@@ -124,8 +138,7 @@ export default {
             status: status,
             htmlLength: text.length,
             method: 'POST',
-            url: 'https://leporno.de/search.php',
-            htmlPreview: text.substring(0, 3000)
+            url: 'https://leporno.de/search.php'
           };
           
           return text;
@@ -271,6 +284,9 @@ export default {
           const peerMatch = row.match(/<span\s+class=["']red["'][^>]*>&nbsp;(\d+)<\/span>/i);
           const peers = peerMatch ? parseInt(peerMatch[1]) : 0;
           
+          const dateMatch = row.match(/<td>(\d+\s+\w+\s+\d+)<\/td>/i);
+          const dateStr = dateMatch ? dateMatch[1] : "";
+          
           xxxtorCount++;
           
           Results.push({
@@ -281,9 +297,11 @@ export default {
             Tracker: "XXXTor",
             MagnetUri: magnet || (hash ? `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}&tr=udp://tracker.opentrackr.org:1337/announce` : ""),
             Link: `https://xxxtor.com/torrent/${id}/`,
-            PublishDate: new Date().toISOString(),
+            PublishDate: parseXXXTorDate(dateStr),
           });
         }
+
+        console.log(`XXXTor: parsed ${xxxtorCount} torrents`);
       }
 
       // ===================================================
@@ -295,109 +313,51 @@ export default {
         let lepornoCount = 0;
         const lepornoItems = [];
 
-        // phpBB выдает результаты в формате:
-        // <li class="row">...результат...</li> или
-        // <dt>...</dt><dd>...</dd>
+        // Парсим список топиков из страницы поиска
+        const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
+        let rowMatch;
         
-        // СТРАТЕГИЯ 1: Поиск блоков результатов <li class="row">
-        const resultBlockRegex = /<li\s+class=["']row["'][^>]*>([\s\S]*?)<\/li>/gi;
-        let blockMatch;
-        
-        while ((blockMatch = resultBlockRegex.exec(lepornoHtml)) !== null) {
-          const block = blockMatch[1];
+        while ((rowMatch = rowRegex.exec(lepornoHtml)) !== null) {
+          const row = rowMatch[1];
           
-          // Ищем ссылку на топик
-          const topicMatch = block.match(/href=["']\.\/viewtopic\.php\?[^"']*[&?]t=(\d+)[^"']*["'][^>]*class=["']topictitle["'][^>]*>([^<]+)<\/a>/i);
+          // Ищем ссылку на топик: <a href="./viewtopic.php?f=70&t=35758&hilit=2024" class="topictitle">
+          const topicMatch = row.match(/<a\s+href=["']\.\/viewtopic\.php\?f=(\d+)&amp;t=(\d+)[^"']*["']\s+class=["']topictitle["'][^>]*>([^<]+)<\/a>/i);
           if (!topicMatch) continue;
           
-          const topicId = topicMatch[1];
-          let title = topicMatch[2].trim();
+          const forumId = topicMatch[1];
+          const topicId = topicMatch[2];
+          let title = topicMatch[3].trim();
           
           if (seen.has(`leporno_${topicId}`)) continue;
           seen.add(`leporno_${topicId}`);
           
+          // Декодируем HTML entities
           title = title.replace(/&amp;/g, '&')
                       .replace(/&quot;/g, '"')
                       .replace(/&lt;/g, '<')
                       .replace(/&gt;/g, '>')
                       .replace(/&#(\d+);/g, (m, code) => String.fromCharCode(code));
           
-          // Ищем категорию (для определения fileId позже)
-          const forumMatch = block.match(/href=["']\.\/viewforum\.php\?f=(\d+)/);
-          const forumId = forumMatch ? forumMatch[1] : "";
-          
           lepornoItems.push({
-            topicId,
             forumId,
+            topicId,
             title
           });
           
           lepornoCount++;
-        }
-
-        // СТРАТЕГИЯ 2: Если не нашли через <li>, ищем через <tr valign="middle">
-        if (lepornoCount === 0) {
-          const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
-          let rowMatch;
           
-          while ((rowMatch = rowRegex.exec(lepornoHtml)) !== null) {
-            const row = rowMatch[1];
-            
-            if (!row.includes('viewtopic.php')) continue;
-            
-            const topicMatch = row.match(/viewtopic\.php\?[^"']*[&?]t=(\d+)[^"']*["'][^>]*class=["']topictitle["'][^>]*>([^<]+)<\/a>/i);
-            if (!topicMatch) continue;
-            
-            const topicId = topicMatch[1];
-            let title = topicMatch[2].trim();
-            
-            if (seen.has(`leporno_${topicId}`)) continue;
-            seen.add(`leporno_${topicId}`);
-            
-            title = title.replace(/&amp;/g, '&')
-                        .replace(/&quot;/g, '"')
-                        .replace(/&lt;/g, '<')
-                        .replace(/&gt;/g, '>')
-                        .replace(/&#(\d+);/g, (m, code) => String.fromCharCode(code));
-            
-            const forumMatch = row.match(/viewforum\.php\?f=(\d+)/);
-            const forumId = forumMatch ? forumMatch[1] : "";
-            
-            // Размер и сиды из описания
-            const sizeMatch = row.match(/(?:Размер|Größe|Size):\s*<b>([\d.,]+)\s*&nbsp;\s*(TB|GB|MB|KB|ТБ|ГБ|МБ|КБ)/i);
-            const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], translateUnit(sizeMatch[2])) : 0;
-            
-            const seedMatch = row.match(/<span\s+class=["'][^"']*seed[^"']*["'][^>]*><b>(\d+)<\/b><\/span>/i);
-            const seeders = seedMatch ? parseInt(seedMatch[1]) : 0;
-            
-            const peerMatch = row.match(/<span\s+class=["'][^"']*leech[^"']*["'][^>]*><b>(\d+)<\/b><\/span>/i);
-            const peers = peerMatch ? parseInt(peerMatch[1]) : 0;
-            
-            const downloadMatch = row.match(/download\/file\.php\?id=(\d+)/);
-            const fileId = downloadMatch ? downloadMatch[1] : "";
-            
-            lepornoItems.push({
-              topicId,
-              forumId,
-              fileId,
-              title,
-              size,
-              seeders,
-              peers
-            });
-            
-            lepornoCount++;
-          }
+          // Ограничение: берем только первые 50 результатов (чтобы не превысить лимиты Worker)
+          if (lepornoCount >= 50) break;
         }
 
-        debug.trackers.leporno.parsedCount = lepornoCount;
-        console.log(`LePorno.de: parsed ${lepornoCount} torrents`);
+        debug.trackers.leporno.foundTopics = lepornoCount;
+        console.log(`LePorno.de: found ${lepornoCount} topics, fetching details...`);
 
         if (lepornoItems.length > 0) {
-          // Для каждого топика делаем запрос на страницу, чтобы получить fileId и magnet
+          // Получаем детали каждого топика (размер, сиды, fileId)
           const lepornoDetails = await Promise.all(
             lepornoItems.map(item =>
-              fetch(`https://leporno.de/viewtopic.php?f=${item.forumId || ''}&t=${item.topicId}`, {
+              fetch(`https://leporno.de/viewtopic.php?f=${item.forumId}&t=${item.topicId}`, {
                 headers: { 
                   "User-Agent": "Mozilla/5.0",
                   "Referer": "https://leporno.de/search.php"
@@ -406,38 +366,38 @@ export default {
                 .then(async r => {
                   const html = await r.text();
                   
-                  // Ищем fileId если его еще нет
+                  // Ищем fileId: download/file.php?id=XXXXX
                   const fileIdMatch = html.match(/download\/file\.php\?id=(\d+)/);
-                  const fileId = item.fileId || (fileIdMatch ? fileIdMatch[1] : "");
+                  const fileId = fileIdMatch ? fileIdMatch[1] : "";
                   
-                  // Ищем размер если его еще нет
-                  let size = item.size || 0;
-                  if (!size) {
-                    const sizeMatch = html.match(/(?:Размер|Größe|Size):\s*<b>([\d.,]+)\s*&nbsp;\s*(TB|GB|MB|KB|ТБ|ГБ|МБ|КБ)/i);
-                    size = sizeMatch ? parseSizeToBytes(sizeMatch[1], translateUnit(sizeMatch[2])) : 0;
-                  }
+                  // Ищем размер: Размер: <b>543.97&nbsp;МБ</b>
+                  const sizeMatch = html.match(/(?:Размер|Größe|Size):\s*<b>([\d.,]+)\s*&nbsp;\s*(TB|GB|MB|KB|ТБ|ГБ|МБ|КБ)/i);
+                  const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], translateUnit(sizeMatch[2])) : 0;
                   
-                  // Ищем сиды/пиры если их еще нет
-                  let seeders = item.seeders || 0;
-                  let peers = item.peers || 0;
+                  // Ищем сиды: <span class="my_tt seed"><b>139</b></span>
+                  const seedMatch = html.match(/<span\s+class=["'][^"']*seed[^"']*["'][^>]*><b>(\d+)<\/b><\/span>/i);
+                  const seeders = seedMatch ? parseInt(seedMatch[1]) : 0;
                   
-                  if (!seeders) {
-                    const seedMatch = html.match(/<span\s+class=["'][^"']*seed[^"']*["'][^>]*><b>(\d+)<\/b><\/span>/i);
-                    seeders = seedMatch ? parseInt(seedMatch[1]) : 0;
-                  }
+                  // Ищем пиры: <span class="my_tt leech"><b>6</b></span>
+                  const peerMatch = html.match(/<span\s+class=["'][^"']*leech[^"']*["'][^>]*><b>(\d+)<\/b><\/span>/i);
+                  const peers = peerMatch ? parseInt(peerMatch[1]) : 0;
                   
-                  if (!peers) {
-                    const peerMatch = html.match(/<span\s+class=["'][^"']*leech[^"']*["'][^>]*><b>(\d+)<\/b><\/span>/i);
-                    peers = peerMatch ? parseInt(peerMatch[1]) : 0;
-                  }
+                  // Ищем дату: <p class="topicdetails">04 мар 2026, 20:51</p>
+                  const dateMatch = html.match(/<p\s+class=["']topicdetails["'][^>]*>(\d+\s+\w+\s+\d+,\s+\d+:\d+)<\/p>/i);
+                  const dateStr = dateMatch ? dateMatch[1] : "";
                   
-                  return { fileId, size, seeders, peers };
+                  return { fileId, size, seeders, peers, dateStr };
                 })
-                .catch(() => ({ fileId: "", size: 0, seeders: 0, peers: 0 }))
+                .catch(err => {
+                  console.error(`LePorno detail error for topic ${item.topicId}:`, err.message);
+                  return { fileId: "", size: 0, seeders: 0, peers: 0, dateStr: "" };
+                })
             )
           );
 
-          // Получаем magnet-ссылки
+          console.log(`LePorno.de: fetched ${lepornoDetails.length} topic details, getting magnets...`);
+
+          // Получаем magnet-ссылки только для тех, у кого есть fileId
           const lepornoMagnets = await Promise.all(
             lepornoDetails.map((detail, i) => {
               if (!detail.fileId) return Promise.resolve("");
@@ -445,16 +405,18 @@ export default {
               return fetch(`https://leporno.de/download/file.php?id=${detail.fileId}&magnet=1&confirm=1`, {
                 headers: { 
                   "User-Agent": "Mozilla/5.0",
-                  "Referer": `https://leporno.de/viewtopic.php?t=${lepornoItems[i].topicId}`
+                  "Referer": `https://leporno.de/viewtopic.php?f=${lepornoItems[i].forumId}&t=${lepornoItems[i].topicId}`
                 },
                 redirect: 'manual'
               })
                 .then(async r => {
+                  // Проверяем редирект
                   const location = r.headers.get('Location');
                   if (location && location.startsWith('magnet:')) {
                     return location.replace(/&amp;/g, '&');
                   }
                   
+                  // Ищем в HTML
                   const html = await r.text();
                   const magnetMatch = html.match(/href=["'](magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^"']*)["']/i);
                   return magnetMatch ? magnetMatch[1].replace(/&amp;/g, '&') : "";
@@ -463,6 +425,7 @@ export default {
             })
           );
 
+          // Собираем результаты
           lepornoItems.forEach((item, i) => {
             const detail = lepornoDetails[i];
             const magnet = lepornoMagnets[i];
@@ -475,14 +438,16 @@ export default {
               Tracker: "LePorno.de",
               MagnetUri: magnet || (detail.fileId ? `https://leporno.de/download/file.php?id=${detail.fileId}` : ""),
               Link: `https://leporno.de/viewtopic.php?f=${item.forumId}&t=${item.topicId}`,
-              PublishDate: new Date().toISOString(),
+              PublishDate: parseLepornoDate(detail.dateStr),
             });
           });
 
+          debug.trackers.leporno.parsedCount = lepornoItems.length;
+          debug.trackers.leporno.addedToResults = lepornoItems.length;
           console.log(`LePorno.de: added ${lepornoItems.length} results`);
         }
-      } else if (lepornoHtml && lepornoHtml.length <= 30000) {
-        debug.trackers.leporno.message = "Page too short - possibly no results or blocked";
+      } else if (lepornoHtml) {
+        debug.trackers.leporno.message = `HTML too short (${lepornoHtml.length} bytes) or status != 200`;
       }
 
     } catch (e) {
@@ -538,6 +503,66 @@ function translateUnit(unit) {
     'ТБ': 'TB', 'ГБ': 'GB', 'МБ': 'MB', 'КБ': 'KB'
   };
   return map[unit.toUpperCase()] || unit;
+}
+
+function parseXXXTorDate(dateStr) {
+  if (!dateStr) return new Date().toISOString();
+  
+  try {
+    const months = {
+      'янв': 0, 'фев': 1, 'мар': 2, 'апр': 3, 'май': 4, 'июн': 5,
+      'июл': 6, 'авг': 7, 'сен': 8, 'окт': 9, 'ноя': 10, 'дек': 11
+    };
+    
+    const parts = dateStr.toLowerCase().split(/\s+/);
+    if (parts.length === 3) {
+      const day = parseInt(parts[0]);
+      const month = months[parts[1]];
+      let year = parseInt(parts[2]);
+      
+      if (year < 100) {
+        year += year > 50 ? 1900 : 2000;
+      }
+      
+      if (!isNaN(day) && month !== undefined && !isNaN(year)) {
+        return new Date(year, month, day).toISOString();
+      }
+    }
+  } catch (e) {
+    console.error("XXXTor date parse error:", e);
+  }
+  
+  return new Date().toISOString();
+}
+
+function parseLepornoDate(dateStr) {
+  if (!dateStr) return new Date().toISOString();
+  
+  try {
+    // Формат: "04 мар 2026, 20:51"
+    const months = {
+      'янв': 0, 'фев': 1, 'мар': 2, 'апр': 3, 'май': 4, 'июн': 5,
+      'июл': 6, 'авг': 7, 'сен': 8, 'окт': 9, 'ноя': 10, 'дек': 11
+    };
+    
+    const match = dateStr.match(/(\d+)\s+(\w+)\s+(\d+),\s+(\d+):(\d+)/i);
+    if (match) {
+      const day = parseInt(match[1]);
+      const monthStr = match[2].toLowerCase();
+      const month = months[monthStr];
+      const year = parseInt(match[3]);
+      const hour = parseInt(match[4]);
+      const minute = parseInt(match[5]);
+      
+      if (!isNaN(day) && month !== undefined && !isNaN(year)) {
+        return new Date(year, month, day, hour, minute).toISOString();
+      }
+    }
+  } catch (e) {
+    console.error("LePorno date parse error:", e);
+  }
+  
+  return new Date().toISOString();
 }
 
 function jsonResponse(data) {
