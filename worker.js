@@ -157,8 +157,8 @@ export default {
         }
       }
 
-      // ===================================================
-// 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕНО: ЗАХВАТ ПОЛНОЙ ССЫЛКИ С SID)
+// ===================================================
+// 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕНО: ИСПОЛЬЗОВАНИЕ ПРЯМОЙ MAGNET-ССЫЛКИ)
 // ===================================================
 if (lepornoHtml) {
   const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
@@ -170,19 +170,24 @@ if (lepornoHtml) {
 
     // Извлекаем ID топика
     const topicMatch = row.match(/viewtopic\.php\?(?:[^"']*&amp;)?t=(\d+)/i);
-    // Извлекаем ПУТЬ к файлу полностью (вместе с id и sid если они есть)
-    const fileLinkMatch = row.match(/href=["'](\.\/download\/file\.php\?id=\d+[^"']*)["']/i);
+    // Извлекаем ПРЯМУЮ MAGNET-ССЫЛКУ
+    const magnetMatch = row.match(/href=["'](\.\/download\/file\.php\?id=\d+[^"']*magnet=1[^"']*)["']/i);
     // Извлекаем Название
     const titleMatch = row.match(/class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i);
     // Извлекаем размер файла
-    const sizeMatch = row.match(/<td\s+class=["']gensmall["'][^>]*>[\s\S]*?(\d+\.?\d*\s*(?:GB|MB|KB|GB|MB|KB))[\s\S]*?<\/td>/i);
+    const sizeMatch = row.match(/Размер:\s*<b>([\d.]+)\s*(GB|MB|KB|ГБ|МБ|КБ)<\/b>/i);
+    // Извлекаем количество сидов и пиров
+    const seedMatch = row.match(/class=["']my_tt seed["'][^>]*><b>(\d+)<\/b>/i);
+    const peerMatch = row.match(/class=["']my_tt leech["'][^>]*><b>(\d+)<\/b>/i);
 
-    if (topicMatch && fileLinkMatch && titleMatch) {
+    if (topicMatch && magnetMatch && titleMatch) {
       lepItems.push({
         topicId: topicMatch[1],
-        fileUrl: fileLinkMatch[1].replace(/^\./, ''),
+        magnetUrl: magnetMatch[1].replace(/^\./, ''),
         title: titleMatch[1].replace(/&amp;/g, '&').replace(/<[^>]+>/g, '').trim(),
-        size: sizeMatch ? sizeMatch[1] : null
+        size: sizeMatch ? `${sizeMatch[1]} ${sizeMatch[2]}` : null,
+        seeders: seedMatch ? parseInt(seedMatch[1]) : 0,
+        peers: peerMatch ? parseInt(peerMatch[1]) : 0
       });
     }
     if (lepItems.length >= 10) break;
@@ -191,61 +196,62 @@ if (lepornoHtml) {
   // Обрабатываем каждый найденный торрент
   await Promise.all(lepItems.map(async item => {
     try {
-      // Формируем полный URL для скачивания
-      const downloadUrl = `https://leporno.de${item.fileUrl}`;
+      // Формируем полный URL для магнет-ссылок
+      const magnetUrl = `https://leporno.de${item.magnetUrl}`;
 
-      // Добавляем дополнительные заголовки для имитации браузера
-      const res = await fetch(downloadUrl, {
+      // Делаем запрос на получение магнет-ссылок
+      const res = await fetch(magnetUrl, {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
           "Referer": `https://leporno.de/viewtopic.php?t=${item.topicId}`,
-          "Accept": "application/x-bittorrent",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
           "Connection": "keep-alive"
         },
-        credentials: 'omit' // Явно указываем, что не отправляем куки
+        credentials: 'omit'
       });
 
-      if (res.ok && res.headers.get('content-type') === 'application/x-bittorrent') {
-        const arrayBuffer = await res.arrayBuffer();
+      if (res.ok) {
+        const html = await res.text();
+        // Ищем магнет-ссылку в ответе
+        const magnetLinkMatch = html.match(/href=["'](magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^"']*)["']/i);
 
-        // Проверяем минимальный размер torrent-файла
-        if (arrayBuffer.byteLength < 100) {
-          throw new Error("Слишком маленький файл - вероятно не torrent");
-        }
+        if (magnetLinkMatch) {
+          const magnetUri = magnetLinkMatch[1].replace(/&amp;/g, '&');
+          const hash = (magnetUri.match(/btih:([a-fA-F0-9]{40})/i) || [])[1];
 
-        const hash = await getInfoHash(arrayBuffer);
+          if (hash && !seen.has(hash)) {
+            seen.add(hash);
 
-        if (hash && !seen.has(hash)) {
-          seen.add(hash);
-
-          // Парсим размер если он был извлечен
-          let size = 0;
-          if (item.size) {
-            const sizeParts = item.size.match(/(\d+\.?\d*)\s*(GB|MB|KB)/i);
-            if (sizeParts) {
-              size = parseSizeToBytes(sizeParts[1], sizeParts[2]);
+            // Парсим размер если он был извлечен
+            let size = 0;
+            if (item.size) {
+              const sizeParts = item.size.match(/(\d+\.?\d*)\s*(GB|MB|KB|ГБ|МБ|КБ)/i);
+              if (sizeParts) {
+                size = parseSizeToBytes(sizeParts[1], sizeParts[2]);
+              }
             }
-          }
 
-          Results.push({
-            Title: item.title,
-            Seeders: 0, // LePorno не предоставляет эту информацию
-            Peers: 0,  // LePorno не предоставляет эту информацию
-            Size: size,
-            Tracker: "LePorno.de",
-            MagnetUri: `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}&tr=udp://tracker.opentrackr.org:1337/announce`,
-            Link: `https://leporno.de/viewtopic.php?t=${item.topicId}`,
-            PublishDate: new Date().toISOString()
-          });
+            Results.push({
+              Title: item.title,
+              Seeders: item.seeders,
+              Peers: item.peers,
+              Size: size,
+              Tracker: "LePorno.de",
+              MagnetUri: magnetUri,
+              Link: `https://leporno.de/viewtopic.php?t=${item.topicId}`,
+              PublishDate: new Date().toISOString()
+            });
+          }
         }
       } else {
-        console.log(`LePorno: Не удалось скачать torrent (status: ${res.status})`);
+        console.log(`LePorno: Не удалось получить магнет-ссылку (status: ${res.status})`);
       }
     } catch (e) {
-      console.error("LePorno download/hash error:", e.message);
+      console.error("LePorno magnet error:", e.message);
     }
   }));
 }
+
 
 
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
