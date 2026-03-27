@@ -158,71 +158,95 @@ export default {
       }
 
       // ===================================================
-      // 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕНО: ЗАХВАТ ПОЛНОЙ ССЫЛКИ С SID)
-      // ===================================================
-      if (lepornoHtml) {
-        const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
-        const lepItems = [];
-        let rm;
-        
-        while ((rm = rowRegex.exec(lepornoHtml)) !== null) {
-          const row = rm[1];
-          
-          // Извлекаем ID топика
-          const topicMatch = row.match(/viewtopic\.php\?(?:[^"']*&amp;)?t=(\d+)/i);
-          // Извлекаем ПУТЬ к файлу полностью (вместе с id и sid если они есть)
-          // Ищем href, который начинается на ./download/file.php?id=...
-          const fileLinkMatch = row.match(/href=["'](\.\/download\/file\.php\?id=\d+[^"']*)["']/i);
-          // Извлекаем Название
-          const titleMatch = row.match(/class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i);
+// 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕНО: ЗАХВАТ ПОЛНОЙ ССЫЛКИ С SID)
+// ===================================================
+if (lepornoHtml) {
+  const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
+  const lepItems = [];
+  let rm;
 
-          if (topicMatch && fileLinkMatch && titleMatch) {
-            lepItems.push({
-              topicId: topicMatch[1],
-              fileUrl: fileLinkMatch[1].replace(/^\./, ''), // Превращаем ./download... в /download...
-              title: titleMatch[1].replace(/&amp;/g, '&').replace(/<[^>]+>/g, '').trim()
-            });
-          }
-          if (lepItems.length >= 10) break;
+  while ((rm = rowRegex.exec(lepornoHtml)) !== null) {
+    const row = rm[1];
+
+    // Извлекаем ID топика
+    const topicMatch = row.match(/viewtopic\.php\?(?:[^"']*&amp;)?t=(\d+)/i);
+    // Извлекаем ПУТЬ к файлу полностью (вместе с id и sid если они есть)
+    const fileLinkMatch = row.match(/href=["'](\.\/download\/file\.php\?id=\d+[^"']*)["']/i);
+    // Извлекаем Название
+    const titleMatch = row.match(/class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i);
+    // Извлекаем размер файла
+    const sizeMatch = row.match(/<td\s+class=["']gensmall["'][^>]*>[\s\S]*?(\d+\.?\d*\s*(?:GB|MB|KB|GB|MB|KB))[\s\S]*?<\/td>/i);
+
+    if (topicMatch && fileLinkMatch && titleMatch) {
+      lepItems.push({
+        topicId: topicMatch[1],
+        fileUrl: fileLinkMatch[1].replace(/^\./, ''),
+        title: titleMatch[1].replace(/&amp;/g, '&').replace(/<[^>]+>/g, '').trim(),
+        size: sizeMatch ? sizeMatch[1] : null
+      });
+    }
+    if (lepItems.length >= 10) break;
+  }
+
+  // Обрабатываем каждый найденный торрент
+  await Promise.all(lepItems.map(async item => {
+    try {
+      // Формируем полный URL для скачивания
+      const downloadUrl = `https://leporno.de${item.fileUrl}`;
+
+      // Добавляем дополнительные заголовки для имитации браузера
+      const res = await fetch(downloadUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Referer": `https://leporno.de/viewtopic.php?t=${item.topicId}`,
+          "Accept": "application/x-bittorrent",
+          "Connection": "keep-alive"
+        },
+        credentials: 'omit' // Явно указываем, что не отправляем куки
+      });
+
+      if (res.ok && res.headers.get('content-type') === 'application/x-bittorrent') {
+        const arrayBuffer = await res.arrayBuffer();
+
+        // Проверяем минимальный размер torrent-файла
+        if (arrayBuffer.byteLength < 100) {
+          throw new Error("Слишком маленький файл - вероятно не torrent");
         }
 
-        // Обрабатываем каждый найденный торрент
-        await Promise.all(lepItems.map(async item => {
-          try {
-            // Формируем полный URL для скачивания (https://leporno.de/download/file.php?id=...&sid=...)
-            const downloadUrl = `https://leporno.de${item.fileUrl}`;
-            
-            const res = await fetch(downloadUrl, {
-              headers: { 
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Referer": "https://leporno.de/search.php"
-              }
-            });
-            
-            if (res.ok) {
-              const arrayBuffer = await res.arrayBuffer();
-              // Твоя функция getInfoHash для вычисления хеша из файла
-              const hash = await getInfoHash(arrayBuffer);
+        const hash = await getInfoHash(arrayBuffer);
 
-              if (hash && !seen.has(hash)) {
-                seen.add(hash);
-                Results.push({
-                  Title: item.title,
-                  Seeders: 0,
-                  Peers: 0,
-                  Size: 0,
-                  Tracker: "LePorno.de",
-                  MagnetUri: `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}&tr=udp://tracker.opentrackr.org:1337/announce`,
-                  Link: `https://leporno.de/viewtopic.php?t=${item.topicId}`,
-                  PublishDate: new Date().toISOString()
-                });
-              }
+        if (hash && !seen.has(hash)) {
+          seen.add(hash);
+
+          // Парсим размер если он был извлечен
+          let size = 0;
+          if (item.size) {
+            const sizeParts = item.size.match(/(\d+\.?\d*)\s*(GB|MB|KB)/i);
+            if (sizeParts) {
+              size = parseSizeToBytes(sizeParts[1], sizeParts[2]);
             }
-          } catch (e) {
-            console.error("LePorno download/hash error:", e);
           }
-        }));
+
+          Results.push({
+            Title: item.title,
+            Seeders: 0, // LePorno не предоставляет эту информацию
+            Peers: 0,  // LePorno не предоставляет эту информацию
+            Size: size,
+            Tracker: "LePorno.de",
+            MagnetUri: `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}&tr=udp://tracker.opentrackr.org:1337/announce`,
+            Link: `https://leporno.de/viewtopic.php?t=${item.topicId}`,
+            PublishDate: new Date().toISOString()
+          });
+        }
+      } else {
+        console.log(`LePorno: Не удалось скачать torrent (status: ${res.status})`);
       }
+    } catch (e) {
+      console.error("LePorno download/hash error:", e.message);
+    }
+  }));
+}
+
 
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
