@@ -157,8 +157,8 @@ export default {
         }
       }
 
-            // ===================================================
-      // 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+      // ===================================================
+      // 5. ПАРСИНГ LEPORNO.DE (ПОЛУЧЕНИЕ HASH ЧЕРЕЗ .TORRENT)
       // ===================================================
       if (lepornoHtml) {
         const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
@@ -168,72 +168,52 @@ export default {
         while ((rm = rowRegex.exec(lepornoHtml)) !== null) {
           const row = rm[1];
           
-          // 1. Извлекаем ID топика и Название
-          const topicMatch = row.match(/viewtopic\.php\?[^"']*t=(\d+)[^"']*["'][^>]*class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i);
-          // 2. Извлекаем ID файла для магнита
-          const fileIdMatch = row.match(/download\/file\.php\?id=(\d+)/);
+          // Извлекаем ID топика (t=...)
+          const topicMatch = row.match(/viewtopic\.php\?(?:[^"']*&amp;)?t=(\d+)/i);
+          // Извлекаем ID файла (id=...) для скачивания .torrent
+          const fileIdMatch = row.match(/download\/file\.php\?id=(\d+)/i);
+          // Извлекаем Название
+          const titleMatch = row.match(/class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i);
 
-          if (topicMatch && fileIdMatch) {
-            const topicId = topicMatch[1];
-            const fileId = fileIdMatch[1];
-            let title = topicMatch[2].replace(/<[^>]+>/g, '').trim();
-
-            // 3. Извлекаем Размер (Размер: <b>317.68&nbsp;МБ</b>)
-            // Ищем число и единицу измерения (поддерживаем кириллицу и латиницу)
-            const sizeM = row.match(/Размер:[\s\S]*?<b>([\d.,]+)\s*(?:&nbsp;|\s)*(TB|GB|MB|KB|ТБ|ГБ|МБ|КБ)/i);
-            const sizeBytes = sizeM ? parseSizeToBytes(sizeM[1], sizeM[2]) : 0;
-
-            // 4. Извлекаем Сиды и Пиры
-            const seedsM = row.match(/class=["']my_tt seed["'][^>]*><b>(\d+)<\/b>/i);
-            const leechM = row.match(/class=["']my_tt leech["'][^>]*><b>(\d+)<\/b>/i);
-
+          if (topicMatch && fileIdMatch && titleMatch) {
             lepItems.push({
-              topicId,
-              fileId,
-              title,
-              size: sizeBytes,
-              seeds: seedsM ? parseInt(seedsM[1]) : 0,
-              peers: leechM ? parseInt(leechM[1]) : 0
+              topicId: topicMatch[1],
+              fileId: fileIdMatch[1],
+              title: titleMatch[1].replace(/&amp;/g, '&').replace(/<[^>]+>/g, '').trim()
             });
           }
-          if (lepItems.length >= 15) break;
+          // Лимит 10 запросов, чтобы не выйти за лимиты времени Cloudflare
+          if (lepItems.length >= 10) break;
         }
 
-        // 5. Получаем реальные Magnet-ссылки
+        // Обрабатываем каждый найденный торрент
         await Promise.all(lepItems.map(async item => {
           try {
-            const magRes = await fetch(`https://leporno.de/download/file.php?id=${item.fileId}&magnet=1&confirm=1`, {
-              headers: { "User-Agent": "Mozilla/5.0" },
-              redirect: 'manual' 
+            // 1. Скачиваем .torrent файл
+            const res = await fetch(`https://leporno.de/download/file.php?id=${item.fileId}`, {
+              headers: { "User-Agent": "Mozilla/5.0" }
             });
-            
-            let magnet = magRes.headers.get('Location') || "";
-            
-            if (!magnet.startsWith('magnet')) {
-                const text = await magRes.text();
-                const m = text.match(/href=["'](magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^"']*)["']/i);
-                magnet = m ? m[1] : "";
-            }
+            const arrayBuffer = await res.arrayBuffer();
 
-            if (magnet) {
-              const hashMatch = magnet.match(/btih:([a-fA-F0-9]{40})/i);
-              const hash = hashMatch ? hashMatch[1].toLowerCase() : `lep_${item.fileId}`;
-              
-              if (!seen.has(hash)) {
-                seen.add(hash);
-                Results.push({
-                  Title: item.title,
-                  Seeders: item.seeds,
-                  Peers: item.peers,
-                  Size: item.size,
-                  Tracker: "LePorno.de",
-                  MagnetUri: magnet.replace(/&amp;/g, '&'),
-                  Link: `https://leporno.de/viewtopic.php?t=${item.topicId}`,
-                  PublishDate: new Date().toISOString()
-                });
-              }
+            // 2. Вычисляем хеш с помощью твоей функции getInfoHash
+            const hash = await getInfoHash(arrayBuffer);
+
+            if (hash && !seen.has(hash)) {
+              seen.add(hash);
+              Results.push({
+                Title: item.title,
+                Seeders: 0,
+                Peers: 0,
+                Size: 0,
+                Tracker: "LePorno.de",
+                MagnetUri: `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}&tr=udp://tracker.opentrackr.org:1337/announce&tr=udp://tracker.openbittorrent.com:80`,
+                Link: `https://leporno.de/viewtopic.php?t=${item.topicId}`,
+                PublishDate: new Date().toISOString()
+              });
             }
-          } catch (e) {}
+          } catch (e) {
+            console.error("Error processing LePorno item:", e);
+          }
         }));
       }
 
