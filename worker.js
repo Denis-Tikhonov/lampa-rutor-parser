@@ -158,7 +158,7 @@ export default {
       }
 
 // ===================================================
-// 5. ПАРСИНГ LEPORNO.DE (ПЕРЕРАБОТАННЫЙ ПО АНАЛОГИИ С 3 РАЗДЕЛОМ)
+// 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕННЫЙ ВАРИАНТ)
 // ===================================================
 if (lepornoHtml) {
   try {
@@ -170,16 +170,16 @@ if (lepornoHtml) {
     }
 
     const tableHtml = tableMatch[1];
-    const rows = [...tableHtml.matchAll(/<tr\s+(?:class=["'][^"']*["']\s+)?valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi)];
+    const rows = [...tableHtml.matchAll(/<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi)];
 
     console.log(`[LePorno] Найдено строк: ${rows.length}`);
 
-    const lepItems = rows.slice(1).map(row => { // Пропускаем заголовок (slice(1))
+    const lepItems = rows.slice(1).map(row => {
       const html = row[1];
       const item = {};
 
-      // 1. ID топика (аналогично 3 разделу)
-      const topicLink = (html.match(/href=["'](viewtopic\.php\?t=(\d+)(?:&amp;[^"']*)?)["']/i) || [])[1];
+      // 1. ID топика
+      const topicLink = (html.match(/href=["'](viewtopic\.php[?&]t=(\d+)(?:&amp;[^"']*)?)["']/i) || [])[1];
       if (!topicLink) {
         console.log('[LePorno] Не найдена ссылка на топик');
         return null;
@@ -187,40 +187,40 @@ if (lepornoHtml) {
       item.topicId = topicLink.match(/t=(\d+)/)[1];
       item.link = `https://leporno.de/${topicLink}`;
 
-      // 2. Название (аналогично 3 разделу)
+      // 2. Название
       item.title = (html.match(/class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i) || [])[1]
         ?.replace(/<[^>]+>/g, '')
         ?.replace(/&amp;/g, '&')
         ?.replace(/&quot;/g, '"')
+        ?.replace(/&nbsp;/g, ' ')
         ?.trim();
       if (!item.title) {
         console.log(`[LePorno] Не найден title для топика ${item.topicId}`);
         return null;
       }
 
-      // 3. Магнет-ссылка (аналогично 3 разделу)
-      const magnetMatch = html.match(/href=["'](\.\/download\/file\.php\?id=\d+[^"']*magnet=1[^"']*)["']/i);
+      // 3. Магнет-ссылка (исправлено)
+      const magnetMatch = html.match(/href=["'](\.\/download\/file\.php\?id=\d+(?:&amp;magnet=1(?:&amp;confirm=1)?)?)["']/i);
       item.magnetUrl = magnetMatch ? magnetMatch[1].replace(/^\./, '') : null;
       if (!item.magnetUrl) {
         console.log(`[LePorno] Не найдена magnet-ссылка для топика ${item.topicId}`);
         return null;
       }
 
-      // 4. Размер файла (улучшенный парсинг)
-      const sizeMatch = html.match(/<td[^>]*>\s*Размер:\s*<\/td>\s*<td[^>]*>\s*([\d.,]+)\s*(GB|MB|KB|ГБ|МБ|КБ)\s*<\/td>/i);
+      // 4. Размер файла (исправлено)
+      const sizeMatch = html.match(/Размер:\s*<b>([\d.,]+)&nbsp;(GB|MB|KB|ГБ|МБ|КБ)<\/b>/i);
       if (sizeMatch) {
         const value = parseFloat(sizeMatch[1].replace(',', '.'));
         const unit = sizeMatch[2].toUpperCase();
         const multipliers = { GB: 1e9, ГБ: 1e9, MB: 1e6, МБ: 1e6, KB: 1e3, КБ: 1e3 };
         item.sizeBytes = value * (multipliers[unit] || 1);
-        console.log(`[LePorno] Размер: ${value} ${unit} = ${item.sizeBytes} байт`);
       } else {
         console.log(`[LePorno] Не найден размер для топика ${item.topicId}`);
         item.sizeBytes = 0;
       }
 
-      // 5. Битрейт (аналогично 3 разделу)
-      const bitrateMatch = html.match(/<td[^>]*>\s*Битрейт:\s*<\/td>\s*<td[^>]*>\s*([\d.,]+)\s*(kbps|кбит\/с|Мбит\/с)\s*<\/td>/i);
+      // 5. Битрейт (если есть)
+      const bitrateMatch = html.match(/Битрейт:\s*<b>([\d.,]+)\s*(kbps|кбит\/с|Мбит\/с)<\/b>/i);
       if (bitrateMatch) {
         item.bitrate = parseFloat(bitrateMatch[1].replace(',', '.'));
         if (bitrateMatch[2].toLowerCase().includes('мбит')) {
@@ -228,30 +228,29 @@ if (lepornoHtml) {
         }
       }
 
-      // 6. Сиды и пиры (улучшенный парсинг)
-      const seedMatch = html.match(/<td[^>]*class=["']seed["'][^>]*>\s*(\d+)\s*<\/td>/i);
-      const leechMatch = html.match(/<td[^>]*class=["']leech["'][^>]*>\s*(\d+)\s*<\/td>/i);
+      // 6. Сиды и пиры (исправлено)
+      const seedMatch = html.match(/class=["']my_tt seed["'][^>]*><b>(\d+)<\/b>/i);
+      const leechMatch = html.match(/class=["']my_tt leech["'][^>]*><b>(\d+)<\/b>/i);
 
       item.seeders = seedMatch ? parseInt(seedMatch[1]) : 0;
       item.peers = leechMatch ? parseInt(leechMatch[1]) : 0;
 
-      // Резервный парсинг сидов/пиров (если основной не сработал)
+      // Резервный парсинг сидов/пиров
       if (item.seeders === 0 && item.peers === 0) {
-        const statsMatch = html.match(/<td[^>]*>\s*(\d+)\s*<\/td>\s*<td[^>]*>\s*(\d+)\s*<\/td>/i);
+        const statsMatch = html.match(/<td[^>]*class=["']row1["'][^>]*>\s*<p[^>]*class=["']topicdetails["'][^>]*>\d+<br>\s*<span[^>]*><b>(\d+)<\/b><\/span>\|<span[^>]*><b>(\d+)<\/b><\/span>/i);
         if (statsMatch) {
           item.seeders = parseInt(statsMatch[1]);
           item.peers = parseInt(statsMatch[2]);
-          console.log(`[LePorno] Использован резервный парсинг сидов/пиров: ${item.seeders}/${item.peers}`);
         }
       }
 
       return item;
     }).filter(Boolean);
 
-    // Обработка через общую функцию getInfoHash
+    // Обработка через getInfoHash
     for (const item of lepItems) {
       try {
-        console.log(`[LePorno] Обработка топика ${item.topicId}: ${item.title}`);
+        console.log(`[LePorno] Обработка: ${item.title} (ID: ${item.topicId})`);
 
         const magnetUri = await getInfoHash(`https://leporno.de${item.magnetUrl}`, {
           referer: item.link,
@@ -273,21 +272,16 @@ if (lepornoHtml) {
               Link: item.link,
               PublishDate: new Date().toISOString()
             });
-            console.log(`[LePorno] ✅ Успешно добавлен: ${item.title}`);
-          } else {
-            console.log(`[LePorno] ⚠️ Торрент уже существует или не найден hash`);
+            console.log(`[LePorno] ✅ Добавлен: ${item.title}`);
           }
-        } else {
-          console.log(`[LePorno] ❌ Не удалось получить magnet URI для ${item.title}`);
         }
       } catch (e) {
-        console.error(`[LePorno] Ошибка обработки топика ${item.topicId}:`, e.message);
-        console.log('[LePorno] HTML строки:', row[1].substring(0, 500));
+        console.error(`[LePorno] Ошибка ${item.topicId}:`, e.message);
       }
     }
 
   } catch (e) {
-    console.error('[LePorno] Критическая ошибка:', e.message);
+    console.error('[LePorno] Критическая ошибка:', e);
   }
 }
 
