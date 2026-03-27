@@ -158,7 +158,7 @@ export default {
       }
 
       // ===================================================
-      // 5. ПАРСИНГ LEPORNO.DE (ПОЛУЧЕНИЕ HASH ЧЕРЕЗ .TORRENT)
+      // 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕНО: ЗАХВАТ ПОЛНОЙ ССЫЛКИ С SID)
       // ===================================================
       if (lepornoHtml) {
         const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
@@ -168,51 +168,58 @@ export default {
         while ((rm = rowRegex.exec(lepornoHtml)) !== null) {
           const row = rm[1];
           
-          // Извлекаем ID топика (t=...)
+          // Извлекаем ID топика
           const topicMatch = row.match(/viewtopic\.php\?(?:[^"']*&amp;)?t=(\d+)/i);
-          // Извлекаем ID файла (id=...) для скачивания .torrent
-          const fileIdMatch = row.match(/download\/file\.php\?id=(\d+)/i);
+          // Извлекаем ПУТЬ к файлу полностью (вместе с id и sid если они есть)
+          // Ищем href, который начинается на ./download/file.php?id=...
+          const fileLinkMatch = row.match(/href=["'](\.\/download\/file\.php\?id=\d+[^"']*)["']/i);
           // Извлекаем Название
           const titleMatch = row.match(/class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i);
 
-          if (topicMatch && fileIdMatch && titleMatch) {
+          if (topicMatch && fileLinkMatch && titleMatch) {
             lepItems.push({
               topicId: topicMatch[1],
-              fileId: fileIdMatch[1],
+              fileUrl: fileLinkMatch[1].replace(/^\./, ''), // Превращаем ./download... в /download...
               title: titleMatch[1].replace(/&amp;/g, '&').replace(/<[^>]+>/g, '').trim()
             });
           }
-          // Лимит 10 запросов, чтобы не выйти за лимиты времени Cloudflare
           if (lepItems.length >= 10) break;
         }
 
         // Обрабатываем каждый найденный торрент
         await Promise.all(lepItems.map(async item => {
           try {
-            // 1. Скачиваем .torrent файл
-            const res = await fetch(`https://leporno.de/download/file.php?id=${item.fileId}`, {
-              headers: { "User-Agent": "Mozilla/5.0" }
+            // Формируем полный URL для скачивания (https://leporno.de/download/file.php?id=...&sid=...)
+            const downloadUrl = `https://leporno.de${item.fileUrl}`;
+            
+            const res = await fetch(downloadUrl, {
+              headers: { 
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://leporno.de/search.php"
+              }
             });
-            const arrayBuffer = await res.arrayBuffer();
+            
+            if (res.ok) {
+              const arrayBuffer = await res.arrayBuffer();
+              // Твоя функция getInfoHash для вычисления хеша из файла
+              const hash = await getInfoHash(arrayBuffer);
 
-            // 2. Вычисляем хеш с помощью твоей функции getInfoHash
-            const hash = await getInfoHash(arrayBuffer);
-
-            if (hash && !seen.has(hash)) {
-              seen.add(hash);
-              Results.push({
-                Title: item.title,
-                Seeders: 0,
-                Peers: 0,
-                Size: 0,
-                Tracker: "LePorno.de",
-                MagnetUri: `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}&tr=udp://tracker.opentrackr.org:1337/announce&tr=udp://tracker.openbittorrent.com:80`,
-                Link: `https://leporno.de/viewtopic.php?t=${item.topicId}`,
-                PublishDate: new Date().toISOString()
-              });
+              if (hash && !seen.has(hash)) {
+                seen.add(hash);
+                Results.push({
+                  Title: item.title,
+                  Seeders: 0,
+                  Peers: 0,
+                  Size: 0,
+                  Tracker: "LePorno.de",
+                  MagnetUri: `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}&tr=udp://tracker.opentrackr.org:1337/announce`,
+                  Link: `https://leporno.de/viewtopic.php?t=${item.topicId}`,
+                  PublishDate: new Date().toISOString()
+                });
+              }
             }
           } catch (e) {
-            console.error("Error processing LePorno item:", e);
+            console.error("LePorno download/hash error:", e);
           }
         }));
       }
