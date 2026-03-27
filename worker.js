@@ -158,121 +158,113 @@ export default {
       }
 
 // ===================================================
-// 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕННЫЙ)
+// 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕННЫЙ ПО HTML)
 // ===================================================
 const lePornoResults = [];
 
 if (lepornoHtml) {
-  // Находим таблицу forumline
-  const tableMatch = lepornoHtml.match(/<table[^>]*class=["']forumline["'][^>]*>([\s\S]*?)<\/table>/i);
-  
-  if (tableMatch) {
-    const tableHtml = tableMatch[1];
-    // Ищем строки с valign="middle" (стандарт для phpBB стилей этого сайта)
-    const rows = [...tableHtml.matchAll(/<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi)];
-
-    console.log(`[LePorno] Найдено строк для обработки: ${rows.length}`);
-
-    // Создаем массив промисов для каждого найденного топика, чтобы добыть магнет-ссылку
-    const promises = rows.map(async (rowMatch) => {
-      const html = rowMatch[1];
-
-      // 1. Название и ссылка на топик
-      // Ищем ссылку вида viewtopic.php?f=...&t=ID
-      const topicLinkMatch = html.match(/href=["'](viewtopic\.php\?f=\d+&amp;t=(\d+)[^"']*)["']/i);
-      if (!topicLinkMatch) return null;
-      
-      const topicId = topicLinkMatch[2];
-      const topicHref = topicLinkMatch[1].replace(/&amp;/g, '&');
-      const fullTopicLink = `https://leporno.de/${topicHref}`;
-
-      // Извлекаем заголовок (класс topictitle)
-      const titleMatch = html.match(/class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i);
-      if (!titleMatch) return null;
-      
-      let title = titleMatch[1]
-        .replace(/<[^>]+>/g, '') // Удаляем вложенные теги
-        .replace(/^\s*\[\s*/, '') // Чистим скобки
-        .replace(/\s*\]\s*$/, '')
-        .trim()
-        .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&nbsp;/g, ' ');
-
-      // 2. Размер
-      // Формат: Размер: <b>123.45 MB</b>
-      const sizeMatch = html.match(/Размер:\s*<b>([\d.,]+)\s*&nbsp;\s*(GB|MB|KB|ГБ|МБ|КБ)<\/b>/i);
-      let sizeBytes = 0;
-      if (sizeMatch) {
-        sizeBytes = parseSizeToBytes(sizeMatch[1], sizeMatch[2]);
-      }
-
-      // 3. Сиды и Пиры (Leechers)
-      // Ищем внутри строки классы my_tt seed и my_tt leech
-      // Регулярка игнорирует вложенность тегов вокруг цифр
-      const seedMatch = html.match(/class=["']my_tt\s+seed["'][^>]*>.*?<b>(\d+)<\/b>/i);
-      const leechMatch = html.match(/class=["']my_tt\s+leech["'][^>]*>.*?<b>(\d+)<\/b>/i);
-      
-      const seeders = seedMatch ? parseInt(seedMatch[1]) : 0;
-      const peers = leechMatch ? parseInt(leechMatch[1]) : 0;
-
-      // 4. Получение Magnet-ссылки (Требует дополнительного запроса)
-      let magnetUri = null;
-      try {
-        // Делаем запрос к странице топика, чтобы найти магнет
-        // Добавляем таймаут или ограничиваем параллелизм, если нужно, но для 10-15 запросов нормально
-        const topicPageReq = await fetch(fullTopicLink, {
-          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
-        });
-        
-        if (topicPageReq.ok) {
-          const topicText = await topicPageReq.text();
-          // Ищем магнет ссылку на странице топика
-          // Обычно она в сообщении первого пользователя или в кнопке скачать
-          const magnetFound = topicText.match(/href=["'](magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^"']*)["']/i);
-          if (magnetFound) {
-            magnetUri = magnetFound[1].replace(/&amp;/g, '&');
-          }
-        }
-      } catch (e) {
-        console.warn(`[LePorno] Не удалось получить магнет для топика ${topicId}:`, e.message);
-      }
-
-      // Если магнет так и не найден, пропускаем этот результат (или можно оставить без магнета, но лучше фильтровать)
-      if (!magnetUri) return null;
-
-      return {
-        Title: title,
-        Seeders: seeders,
-        Peers: peers,
-        Size: sizeBytes,
-        Tracker: "LePorno",
-        MagnetUri: magnetUri,
-        Link: fullTopicLink,
-        PublishDate: new Date().toISOString()
-      };
-    });
-
-    // Ждем завершения всех запросов к страницам топиков
-    const results = await Promise.all(promises);
+    // 1. Находим таблицу forumline
+    const tableMatch = lepornoHtml.match(/<table[^>]*class=["']forumline["'][^>]*>([\s\S]*?)<\/table>/i);
     
-    // Фильтруем null (неудачные попытки) и добавляем в общий массив
-    results.forEach(res => {
-      if (res && res.MagnetUri) {
-        // Проверка на дубликаты хешей в глобальном seen
-        const hashMatch = res.MagnetUri.match(/btih:([a-fA-F0-9]{40})/i);
-        if (hashMatch && !seen.has(hashMatch[1].toLowerCase())) {
-          seen.add(hashMatch[1].toLowerCase());
-          lePornoResults.push(res);
-        } else if (!hashMatch) {
-           // Если хеш не вычленяется, добавляем anyway (редкий случай)
-           lePornoResults.push(res);
-        }
-      }
-    });
-  }
+    if (tableMatch) {
+        const tableHtml = tableMatch[1];
+        // 2. Ищем строки <tr valign="middle">
+        const rows = [...tableHtml.matchAll(/<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi)];
+        
+        console.log(`[LePorno] Найдено строк: ${rows.length}`);
+
+        rows.forEach((rowMatch) => {
+            const html = rowMatch[1];
+            
+            try {
+                // --- А. Название и Ссылка на топик ---
+                // Ищем ссылку с классом topictitle
+                const titleMatch = html.match(/class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i);
+                // Ищем href внутри этой ссылки (viewtopic.php?f=...&t=...)
+                const topicLinkMatch = html.match(/href=["'](viewtopic\.php\?f=\d+&amp;t=\d+[^"']*)["']/i);
+                
+                if (!titleMatch || !topicLinkMatch) return;
+
+                let title = titleMatch[1]
+                    .replace(/<[^>]+>/g, '') // Убираем теги внутри заголовка
+                    .replace(/^\s*\[\s*/, '') // Чистим скобки в начале
+                    .replace(/\s*\]\s*$/, '')
+                    .trim()
+                    .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&nbsp;/g, ' ');
+
+                const topicHref = topicLinkMatch[1].replace(/&amp;/g, '&');
+                const fullTopicLink = `https://leporno.de/${topicHref}`;
+                // Извлекаем ID топика для уникальности (параметр t=...)
+                const topicIdMatch = topicHref.match(/t=(\d+)/);
+                const topicId = topicIdMatch ? topicIdMatch[1] : '';
+
+                // --- Б. Магнет-ссылка (Берем из списка!) ---
+                // Ищем ссылку, содержащую magnet=1
+                // Пример: ./download/file.php?id=78013&amp;magnet=1&amp;confirm=1
+                const magnetLinkMatch = html.match(/href=["'](\.\/download\/file\.php\?id=\d+&amp;magnet=1&amp;confirm=1[^"']*)["']/i);
+                
+                let magnetUri = null;
+                if (magnetLinkMatch) {
+                    // Формируем полный URL для магнет-запроса
+                    // Сайт сам редиректит на magnet:, если мы перейдем по этой ссылке
+                    magnetUri = `https://leporno.de/${magnetLinkMatch[1].replace(/&amp;/g, '&')}`;
+                } else {
+                    // Если магнета нет в списке, пропускаем (или можно попробовать найти на странице топика, но пока пропустим)
+                    return; 
+                }
+
+                // --- В. Размер ---
+                // Ищем в p.gensmall: "Размер: <b>346.24&nbsp;МБ</b>"
+                const sizeContainer = html.match(/class=["']gensmall["'][^>]*>([\s\S]*?)<\/p>/i);
+                let sizeBytes = 0;
+                if (sizeContainer) {
+                    const sizeText = sizeContainer[1];
+                    const sizeMatch = sizeText.match(/Размер:\s*<b>([\d.,]+)\s*&nbsp;\s*(GB|MB|KB|ГБ|МБ|КБ)<\/b>/i);
+                    if (sizeMatch) {
+                        sizeBytes = parseSizeToBytes(sizeMatch[1], sizeMatch[2]);
+                    }
+                }
+
+                // --- Г. Сиды и Пиры ---
+                // Структура: 0<br><span class="my_tt seed"><b>62</b></span>|<span class="my_tt leech"><b>9</b></span>
+                // Ищем ячейку, содержащую my_tt seed
+                const seedsCellMatch = html.match(/<span\s+class=["']my_tt\s+seed["'][^>]*><b>(\d+)<\/b>/i);
+                const leechCellMatch = html.match(/<span\s+class=["']my_tt\s+leech["'][^>]*><b>(\d+)<\/b>/i);
+
+                const seeders = seedsCellMatch ? parseInt(seedsCellMatch[1]) : 0;
+                const peers = leechCellMatch ? parseInt(leechCellMatch[1]) : 0;
+
+                // --- Д. Дата (Опционально, если нужно) ---
+                const dateMatch = html.match(/<p\s+class=["']topicdetails["'][^>]*>([\s\S]*?)<\/p>/i);
+                let pubDate = new Date().toISOString();
+                if (dateMatch) {
+                    // Пытаемся распарсить дату "31 янв 2026, 16:00"
+                    // Это сложно без locale, поэтому пока оставим текущую или попробуем простой парсинг
+                    // Для простоты оставим текущую дату, если парсинг сложен
+                }
+
+                // Добавляем в результаты
+                lePornoResults.push({
+                    Title: title,
+                    Seeders: seeders,
+                    Peers: peers,
+                    Size: sizeBytes,
+                    Tracker: "LePorno",
+                    MagnetUri: magnetUri, // Это ссылка-редирект на магнет
+                    Link: fullTopicLink,
+                    PublishDate: pubDate
+                });
+
+            } catch (e) {
+                console.warn("[LePorno] Ошибка парсинга строки:", e.message);
+            }
+        });
+    }
 }
 
-// Добавляем результаты LePorno в общий массив Results
+// Добавляем в общий массив
 Results.push(...lePornoResults);
+console.log(`[LePorno] Успешно обработано: ${lePornoResults.length}`);
 
 
 
