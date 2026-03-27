@@ -158,115 +158,274 @@ export default {
       }
 
 // ===================================================
-// 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕННЫЙ ПО HTML)
+// 6. ПАРСИНГ LEPORNO.DE (BENCODE + SHA1 HASH CALCULATION)
 // ===================================================
+
+/**
+ * Минимальный парсер Bencode (только для структуры Torrent файлов)
+ * Нужен, чтобы извлечь блок 'info' и вычислить хеш.
+ */
+function parseBencode(buffer) {
+    let pos = 0;
+    const view = new Uint8Array(buffer);
+    const textDecoder = new TextDecoder('utf-8');
+
+    function readChar() { return String.fromCharCode(view[pos++]); }
+    function readUntil(char) {
+        let start = pos;
+        while (view[pos] !== char.charCodeAt(0)) { pos++; }
+        return textDecoder.decode(view.slice(start, pos));
+    }
+    function readInt() {
+        let start = pos;
+        while (view[pos] >= 48 && view[pos] <= 57) { pos++; } // 0-9
+        return parseInt(textDecoder.decode(view.slice(start, pos)), 10);
+    }
+
+    function decodeValue() {
+        const char = String.fromCharCode(view[pos]);
+        if (char === 'd') { // Dictionary
+            pos++;
+            const obj = {};
+            while (view[pos] !== 101) { // 'e'
+                const keyLen = readInt();
+                pos++; // skip ':'
+                const key = textDecoder.decode(view.slice(pos, pos + keyLen));
+                pos += keyLen;
+                obj[key] = decodeValue();
+            }
+            pos++; // skip 'e'
+            return obj;
+        } else if (char === 'l') { // List
+            pos++;
+            const arr = [];
+            while (view[pos] !== 101) {
+                arr.push(decodeValue());
+            }
+            pos++; // skip 'e'
+            return arr;
+        } else if (char === 'i') { // Integer
+            pos++;
+            const val = readInt();
+            pos++; // skip 'e'
+            return val;
+        } else if (char >= '0' && char <= '9') { // String
+            const len = readInt();
+            pos++; // skip ':'
+            const start = pos;
+            pos += len;
+            return view.slice(start, pos); // Возвращаем как Uint8Array для точности
+        }
+        throw new Error(`Invalid bencode char: ${char} at ${pos}`);
+    }
+
+    return decodeValue();
+}
+
+/**
+ * Вычисляет SHA-1 хеш для блока info из torrent файла
+ */
+async function calculateInfoHash(torrentBuffer) {
+    try {
+        const decoded = parseBencode(torrentBuffer);
+        
+        // Находим блок 'info' в корне
+        if (!decoded.info) {
+            throw new Error("No 'info' dictionary found in torrent");
+        }
+
+        // Нам нужно получить raw байты блока 'info', чтобы захешировать их.
+        // Но наш парсер уже превратил всё в JS объекты. 
+        // Хитрость: нам нужно найти смещение 'info' в оригинальном буфере и длину.
+        // Однако, простой парсер выше этого не хранит.
+        
+        // Альтернативный надежный способ для Workers:
+        // 1. Находим строку "4:info" в бинарнике.
+        // 2. Парсим длину следующего элемента (словаря).
+        // 3. Вырезаем кусок байтов и хешируем.
+        
+        const infoMarker = new TextEncoder().encode("4:info");
+        let infoStart = -1;
+        
+        // Ищем смещение ключа "info"
+        for (let i = 0; i < torrentBuffer.byteLength - 10; i++) {
+            if (torrentBuffer[i] === 49 && // '1' (если бы было 1:info, но у нас 4:info)
+                // Проверка на "4:info"
+                torrentBuffer[i] === 52 && // '4'
+                torrentBuffer[i+1] === 58 && // ':'
+                torrentBuffer[i+2] === 105 && // 'i'
+                torrentBuffer[i+3] === 110 && // 'n'
+                torrentBuffer[i+4] === 102 && // 'f'
+                torrentBuffer[i+5] === 111    // 'o'
+                ) {
+                    // Нашли "4:info". Теперь нужно понять, где начинается сам словарь и где он кончается.
+                    // Формат: d...4:infod{...}e...e
+                    // Ключ найден. Значение (словарь) начинается сразу после 'o' (последней буквы info)? 
+                    // Нет, в bencode ключ идет за длиной. "4:info" -> длина 4, строка "info".
+                    // Следующий символ - это начало значения. Если значение словарь, то 'd'.
+                    
+                    // Давайте проще: используем готовый подход поиска подстроки "d...4:info"
+                    // Но надежнее всего: найти смещение начала словаря info.
+                    // В bencode словари начинаются с 'd'.
+                    // Структура: ...l...d4:name...4:infod.....ee...
+                    // Мы нашли "4:info". Предыдущий символ должен быть ':' или часть длины.
+                    // Давайте искать паттерн, где перед "4:info" стоит цифра (длина ключа).
+                    // Обычно это просто "4:info".
+                    
+                    // Точный алгоритм поиска начала блока info:
+                    // 1. Найти "4:info".
+                    // 2. Сдвинуться на 6 байт вперед (длина "4:info").
+                    // 3. Там должен быть 'd' (начало словаря info).
+                    const dictStart = i + 6; 
+                    if (torrentBuffer[dictStart] === 100) { // 'd'
+                        infoStart = dictStart;
+                        break;
+                    }
+            }
+        }
+
+        if (infoStart === -1) throw new Error("Could not locate 'info' dictionary start");
+
+        // Теперь нужно найти конец этого словаря. 
+        // Считаем вложенность 'd' и 'e'.
+        let depth = 0;
+        let infoEnd = -1;
+        for (let i = infoStart; i < torrentBuffer.byteLength; i++) {
+            if (torrentBuffer[i] === 100) depth++; // 'd'
+            else if (torrentBuffer[i] === 101) { // 'e'
+                depth--;
+                if (depth === 0) {
+                    infoEnd = i + 1;
+                    break;
+                }
+            }
+        }
+
+        if (infoEnd === -1) throw new Error("Could not locate end of 'info' dictionary");
+
+        const infoSlice = torrentBuffer.slice(infoStart, infoEnd);
+        
+        // Вычисляем SHA-1
+        const hashBuffer = await crypto.subtle.digest('SHA-1', infoSlice);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        
+    } catch (e) {
+        console.error("Error calculating hash:", e);
+        return null;
+    }
+}
+
 const lePornoResults = [];
 
 if (lepornoHtml) {
-    // 1. Находим таблицу forumline
     const tableMatch = lepornoHtml.match(/<table[^>]*class=["']forumline["'][^>]*>([\s\S]*?)<\/table>/i);
-    
     if (tableMatch) {
         const tableHtml = tableMatch[1];
-        // 2. Ищем строки <tr valign="middle">
         const rows = [...tableHtml.matchAll(/<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi)];
         
-        console.log(`[LePorno] Найдено строк: ${rows.length}`);
+        console.log(`[LePorno] Найдено строк для обработки: ${rows.length}`);
 
-        rows.forEach((rowMatch) => {
+        // Используем Promise.all для параллельной загрузки торрентов
+        const promises = rows.map(async (rowMatch) => {
             const html = rowMatch[1];
-            
             try {
                 // --- А. Название и Ссылка на топик ---
-                // Ищем ссылку с классом topictitle
                 const titleMatch = html.match(/class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i);
-                // Ищем href внутри этой ссылки (viewtopic.php?f=...&t=...)
                 const topicLinkMatch = html.match(/href=["'](viewtopic\.php\?f=\d+&amp;t=\d+[^"']*)["']/i);
                 
-                if (!titleMatch || !topicLinkMatch) return;
+                if (!titleMatch || !topicLinkMatch) return null;
 
                 let title = titleMatch[1]
-                    .replace(/<[^>]+>/g, '') // Убираем теги внутри заголовка
-                    .replace(/^\s*\[\s*/, '') // Чистим скобки в начале
-                    .replace(/\s*\]\s*$/, '')
-                    .trim()
+                    .replace(/<[^>]+>/g, '').replace(/^\s*\[\s*/, '').replace(/\s*\]\s*$/, '').trim()
                     .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&nbsp;/g, ' ');
-
+                
                 const topicHref = topicLinkMatch[1].replace(/&amp;/g, '&');
                 const fullTopicLink = `https://leporno.de/${topicHref}`;
-                // Извлекаем ID топика для уникальности (параметр t=...)
-                const topicIdMatch = topicHref.match(/t=(\d+)/);
-                const topicId = topicIdMatch ? topicIdMatch[1] : '';
+                const topicId = topicHref.match(/t=(\d+)/)?.[1] || '';
 
-                // --- Б. Магнет-ссылка (Берем из списка!) ---
-                // Ищем ссылку, содержащую magnet=1
-                // Пример: ./download/file.php?id=78013&amp;magnet=1&amp;confirm=1
-                const magnetLinkMatch = html.match(/href=["'](\.\/download\/file\.php\?id=\d+&amp;magnet=1&amp;confirm=1[^"']*)["']/i);
+                // --- Б. Ссылка на .torrent файл ---
+                // Ищем ссылку на download.php?id=...
+                // Обычно это img с alt="Download" или прямая ссылка рядом
+                const torrentLinkMatch = html.match(/href=["'](\.\/download\.php\?id=\d+[^"']*)["']/i);
                 
-                let magnetUri = null;
-                if (magnetLinkMatch) {
-                    // Формируем полный URL для магнет-запроса
-                    // Сайт сам редиректит на magnet:, если мы перейдем по этой ссылке
-                    magnetUri = `https://leporno.de/${magnetLinkMatch[1].replace(/&amp;/g, '&')}`;
-                } else {
-                    // Если магнета нет в списке, пропускаем (или можно попробовать найти на странице топика, но пока пропустим)
-                    return; 
+                if (!torrentLinkMatch) {
+                    console.warn(`[LePorno] Не найдена ссылка на торрент для: ${title}`);
+                    return null;
                 }
 
-                // --- В. Размер ---
-                // Ищем в p.gensmall: "Размер: <b>346.24&nbsp;МБ</b>"
+                const torrentFileUrl = `https://leporno.de/${torrentLinkMatch[1].replace(/&amp;/g, '&')}`;
+
+                // --- В. Размер, Сиды, Пиры (из HTML списка) ---
                 const sizeContainer = html.match(/class=["']gensmall["'][^>]*>([\s\S]*?)<\/p>/i);
                 let sizeBytes = 0;
                 if (sizeContainer) {
-                    const sizeText = sizeContainer[1];
-                    const sizeMatch = sizeText.match(/Размер:\s*<b>([\d.,]+)\s*&nbsp;\s*(GB|MB|KB|ГБ|МБ|КБ)<\/b>/i);
+                    const sizeMatch = sizeContainer[1].match(/Размер:\s*<b>([\d.,]+)\s*&nbsp;\s*(GB|MB|KB|ГБ|МБ|КБ)<\/b>/i);
                     if (sizeMatch) {
-                        sizeBytes = parseSizeToBytes(sizeMatch[1], sizeMatch[2]);
+                        const multipliers = { 'KB': 1024, 'MB': 1024**2, 'GB': 1024**3, 'КБ': 1024, 'МБ': 1024**2, 'ГБ': 1024**3 };
+                        const val = parseFloat(sizeMatch[1].replace(',', '.'));
+                        const unit = sizeMatch[2].toUpperCase().replace('Г', 'G').replace('М', 'M').replace('К', 'K');
+                        sizeBytes = Math.round(val * (multipliers[unit] || 1));
                     }
                 }
 
-                // --- Г. Сиды и Пиры ---
-                // Структура: 0<br><span class="my_tt seed"><b>62</b></span>|<span class="my_tt leech"><b>9</b></span>
-                // Ищем ячейку, содержащую my_tt seed
                 const seedsCellMatch = html.match(/<span\s+class=["']my_tt\s+seed["'][^>]*><b>(\d+)<\/b>/i);
                 const leechCellMatch = html.match(/<span\s+class=["']my_tt\s+leech["'][^>]*><b>(\d+)<\/b>/i);
-
                 const seeders = seedsCellMatch ? parseInt(seedsCellMatch[1]) : 0;
                 const peers = leechCellMatch ? parseInt(leechCellMatch[1]) : 0;
 
-                // --- Д. Дата (Опционально, если нужно) ---
-                const dateMatch = html.match(/<p\s+class=["']topicdetails["'][^>]*>([\s\S]*?)<\/p>/i);
-                let pubDate = new Date().toISOString();
-                if (dateMatch) {
-                    // Пытаемся распарсить дату "31 янв 2026, 16:00"
-                    // Это сложно без locale, поэтому пока оставим текущую или попробуем простой парсинг
-                    // Для простоты оставим текущую дату, если парсинг сложен
+                // --- Г. ГЛАВНОЕ: Скачиваем торрент и считаем хеш ---
+                // Делаем fetch внутри Worker'а
+                const torrentResponse = await fetch(torrentFileUrl, {
+                    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LePornoBot/1.0)' }
+                });
+
+                if (!torrentResponse.ok) {
+                    console.warn(`[LePorno] Ошибка загрузки торрента ${topicId}: ${torrentResponse.status}`);
+                    return null;
                 }
 
-                // Добавляем в результаты
-                lePornoResults.push({
+                const torrentArrayBuffer = await torrentResponse.arrayBuffer();
+                const infoHash = await calculateInfoHash(torrentArrayBuffer);
+
+                if (!infoHash) {
+                    console.warn(`[LePorno] Не удалось вычислить хеш для ${topicId}`);
+                    return null;
+                }
+
+                // Формируем настоящий Magnet URI
+                // magnet:?xt=urn:btih:<HASH>&dn=<NAME>&tr=<TRACKER>
+                // Трейкеры обычно указаны внутри torrent файла, но для магнета можно добавить announce URL трекера, если известен.
+                // Для Leporno announce URL часто выглядит как http://leporno.de/announce.php?passkey=... (но passkey у нас нет)
+                // Поэтому оставляем только xt (hash) и dn (name). Клиент сам найдет пиров через DHT.
+                
+                const magnetUri = `magnet:?xt=urn:btih:${infoHash}&dn=${encodeURIComponent(title)}`;
+
+                return {
                     Title: title,
                     Seeders: seeders,
                     Peers: peers,
                     Size: sizeBytes,
                     Tracker: "LePorno",
-                    MagnetUri: magnetUri, // Это ссылка-редирект на магнет
+                    MagnetUri: magnetUri, // Чистый магнет
                     Link: fullTopicLink,
-                    PublishDate: pubDate
-                });
+                    PublishDate: new Date().toISOString()
+                };
 
             } catch (e) {
-                console.warn("[LePorno] Ошибка парсинга строки:", e.message);
+                console.error(`[LePorno] Ошибка обработки строки:`, e.message);
+                return null;
             }
         });
+
+        // Ждем завершения всех загрузок и вычислений
+        const results = await Promise.all(promises);
+        lePornoResults.push(...results.filter(r => r !== null));
     }
 }
 
-// Добавляем в общий массив
 Results.push(...lePornoResults);
-console.log(`[LePorno] Успешно обработано: ${lePornoResults.length}`);
-
-
+console.log(`[LePorno] Итоговый результат: ${lePornoResults.length} рабочих магнетов.`);
 
 
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
