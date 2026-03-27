@@ -157,8 +157,8 @@ export default {
         }
       }
 
-      // ===================================================
-      // 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕНО: РАЗМЕР, СИДЫ, ПИРЫ, МАГНЕТ)
+            // ===================================================
+      // 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕННАЯ ВЕРСИЯ)
       // ===================================================
       if (lepornoHtml) {
         const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
@@ -168,8 +168,9 @@ export default {
         while ((rm = rowRegex.exec(lepornoHtml)) !== null) {
           const row = rm[1];
           
-          // Извлекаем ID топика, ID файла и название
-          const topicMatch = row.match(/href=["']\.\/viewtopic\.php\?(?:[^"']*&amp;)?t=(\d+)[^"']*["']\s+class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i);
+          // 1. Извлекаем ID топика и Название
+          const topicMatch = row.match(/viewtopic\.php\?[^"']*t=(\d+)[^"']*["'][^>]*class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i);
+          // 2. Извлекаем ID файла для магнита
           const fileIdMatch = row.match(/download\/file\.php\?id=(\d+)/);
 
           if (topicMatch && fileIdMatch) {
@@ -177,11 +178,12 @@ export default {
             const fileId = fileIdMatch[1];
             let title = topicMatch[2].replace(/<[^>]+>/g, '').trim();
 
-            // Извлекаем Размер (Размер: <b>317.68&nbsp;МБ</b>)
-            const sizeM = row.match(/Размер:\s*<b>([\d.,]+)\s*&nbsp;\s*([^<]+)<\/b>/i);
+            // 3. Извлекаем Размер (Размер: <b>317.68&nbsp;МБ</b>)
+            // Ищем число и единицу измерения (поддерживаем кириллицу и латиницу)
+            const sizeM = row.match(/Размер:[\s\S]*?<b>([\d.,]+)\s*(?:&nbsp;|\s)*(TB|GB|MB|KB|ТБ|ГБ|МБ|КБ)/i);
             const sizeBytes = sizeM ? parseSizeToBytes(sizeM[1], sizeM[2]) : 0;
 
-            // Извлекаем Сиды и Пиры (class="my_tt seed", class="my_tt leech")
+            // 4. Извлекаем Сиды и Пиры
             const seedsM = row.match(/class=["']my_tt seed["'][^>]*><b>(\d+)<\/b>/i);
             const leechM = row.match(/class=["']my_tt leech["'][^>]*><b>(\d+)<\/b>/i);
 
@@ -197,10 +199,9 @@ export default {
           if (lepItems.length >= 15) break;
         }
 
-        // Получаем реальные Magnet-ссылки (Hash)
+        // 5. Получаем реальные Magnet-ссылки
         await Promise.all(lepItems.map(async item => {
           try {
-            // Запрашиваем ссылку с magnet=1. Сервер часто делает редирект сразу на magnet:?xt=...
             const magRes = await fetch(`https://leporno.de/download/file.php?id=${item.fileId}&magnet=1&confirm=1`, {
               headers: { "User-Agent": "Mozilla/5.0" },
               redirect: 'manual' 
@@ -208,7 +209,6 @@ export default {
             
             let magnet = magRes.headers.get('Location') || "";
             
-            // Если редиректа нет, пробуем найти ссылку в теле ответа
             if (!magnet.startsWith('magnet')) {
                 const text = await magRes.text();
                 const m = text.match(/href=["'](magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^"']*)["']/i);
