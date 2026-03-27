@@ -158,131 +158,105 @@ export default {
       }
 
 // ===================================================
-// 5. ПАРСИНГ LEPORNO.DE (УЛУЧШЕННЫЙ ПАРСИНГ ПОЛЕЙ)
+// 5. ПАРСИНГ LEPORNO.DE (УНИФИЦИРОВАННЫЙ С 4 РАЗДЕЛОМ)
 // ===================================================
 if (lepornoHtml) {
-  const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
-  const lepItems = [];
-  let rm;
+  const rows = [...lepornoHtml.matchAll(/<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi)];
 
-  while ((rm = rowRegex.exec(lepornoHtml)) !== null) {
-    const row = rm[1];
+  // Логи для отладки
+  console.log(`[LePorno] Найдено строк: ${rows.length}`);
 
-    // Извлекаем ID топика
-    const topicMatch = row.match(/viewtopic\.php\?(?:[^"']*&amp;)?t=(\d+)/i);
-    if (!topicMatch) continue;
+  const lepItems = rows.slice(0, 10).map(row => {
+    const html = row[1];
+    const item = {};
 
-    // Извлекаем ПРЯМУЮ MAGNET-ССЫЛКУ
-    const magnetMatch = row.match(/href=["'](\.\/download\/file\.php\?id=\d+[^"']*magnet=1[^"']*)["']/i);
-    if (!magnetMatch) continue;
+    // ID топика
+    item.topicId = (html.match(/viewtopic\.php\?(?:[^"']*&amp;)?t=(\d+)/i) || [])[1];
+    if (!item.topicId) {
+      console.log('[LePorno] Не найден topicId в строке');
+      return null;
+    }
 
-    // Извлекаем Название (более надежный парсинг)
-    const titleMatch = row.match(/class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i);
-    if (!titleMatch) continue;
+    // Прямая MAGNET-ссылка
+    item.magnetUrl = (html.match(/href=["'](\.\/download\/file\.php\?id=\d+[^"']*magnet=1[^"']*)["']/i) || [])[1]?.replace(/^\./, '');
+    if (!item.magnetUrl) {
+      console.log(`[LePorno] Не найдена magnet-ссылка для топика ${item.topicId}`);
+      return null;
+    }
 
-    // УЛУЧШЕННОЕ ИЗВЛЕЧЕНИЕ РАЗМЕРА (с поддержкой разных форматов)
-    const sizeMatch = row.match(/Размер:\s*<[^>]+>([\d.,]+)\s*(GB|MB|KB|ГБ|МБ|КБ)<\/[^>]+>/i);
-    let sizeBytes = 0;
+    // Название
+    item.title = (html.match(/class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i) || [])[1]?.replace(/&amp;/g, '&').replace(/<[^>]+>/g, '').trim();
+    if (!item.title) {
+      console.log(`[LePorno] Не найден title для топика ${item.topicId}`);
+      return null;
+    }
+
+    // Размер (с поддержкой разных форматов)
+    const sizeMatch = html.match(/Размер:\s*<[^>]+>([\d.,]+)\s*(GB|MB|KB|ГБ|МБ|КБ)<\/[^>]+>/i);
+    item.sizeBytes = 0;
     if (sizeMatch) {
-      const sizeValue = parseFloat(sizeMatch[1].replace(',', '.'));
-      const sizeUnit = sizeMatch[2].toUpperCase();
-      const multipliers = {
-        'GB': 1024 * 1024 * 1024,
-        'ГБ': 1024 * 1024 * 1024,
-        'MB': 1024 * 1024,
-        'МБ': 1024 * 1024,
-        'KB': 1024,
-        'КБ': 1024
-      };
-      sizeBytes = sizeValue * (multipliers[sizeUnit] || 1);
+      const value = parseFloat(sizeMatch[1].replace(',', '.'));
+      const unit = sizeMatch[2].toUpperCase();
+      const multipliers = { GB: 1e9, ГБ: 1e9, MB: 1e6, МБ: 1e6, KB: 1e3, КБ: 1e3 };
+      item.sizeBytes = value * (multipliers[unit] || 1);
+      console.log(`[LePorno] Размер: ${value} ${unit} = ${item.sizeBytes} байт`);
     }
 
-    // УЛУЧШЕННОЕ ИЗВЛЕЧЕНИЕ БИТРЕЙТА (если есть)
-    let bitrate = null;
-    const bitrateMatch = row.match(/Битрейт:\s*<[^>]+>([\d.,]+)\s*(kbps|кбит\/с|Мбит\/с)<\/[^>]+>/i);
-    if (bitrateMatch) {
-      bitrate = parseFloat(bitrateMatch[1].replace(',', '.'));
-      if (bitrateMatch[2].toLowerCase().includes('мбит')) {
-        bitrate *= 1000; // Конвертация в kbps
-      }
+    // Битрейт
+    const bitrateMatch = html.match(/Битрейт:\s*<[^>]+>([\d.,]+)\s*(kbps|кбит\/с|Мбит\/с)<\/[^>]+>/i);
+    item.bitrate = bitrateMatch ? parseFloat(bitrateMatch[1].replace(',', '.')) : null;
+    if (item.bitrate && bitrateMatch[2].toLowerCase().includes('мбит')) {
+      item.bitrate *= 1000;
     }
 
-    // УЛУЧШЕННОЕ ИЗВЛЕЧЕНИЕ СИДОВ И ПИРОВ (с резервными вариантами)
-    let seeders = 0, peers = 0;
-    const seedMatch = row.match(/class=["'](?:seed|my_tt seed)["'][^>]*>\s*<b>\s*(\d+)\s*<\/b>/i);
-    const peerMatch = row.match(/class=["'](?:leech|my_tt leech)["'][^>]*>\s*<b>\s*(\d+)\s*<\/b>/i);
+    // Сиды и пиры
+    item.seeders = parseInt((html.match(/class=["'](?:seed|my_tt seed)["'][^>]*>\s*<b>\s*(\d+)\s*<\/b>/i) || [])[1]) || 0;
+    item.peers = parseInt((html.match(/class=["'](?:leech|my_tt leech)["'][^>]*>\s*<b>\s*(\d+)\s*<\/b>/i) || [])[1]) || 0;
 
-    if (seedMatch) seeders = parseInt(seedMatch[1]);
-    if (peerMatch) peers = parseInt(peerMatch[1]);
-
-    // Резервный вариант для сидов/пиров (если основной не сработал)
-    if (seeders === 0 && peers === 0) {
-      const statsMatch = row.match(/<td[^>]*>\s*(\d+)\s*<\/td>\s*<td[^>]*>\s*(\d+)\s*<\/td>/i);
+    // Резервный парсинг сидов/пиров
+    if (item.seeders === 0 && item.peers === 0) {
+      const statsMatch = html.match(/<td[^>]*>\s*(\d+)\s*<\/td>\s*<td[^>]*>\s*(\d+)\s*<\/td>/i);
       if (statsMatch) {
-        seeders = parseInt(statsMatch[1]);
-        peers = parseInt(statsMatch[2]);
+        item.seeders = parseInt(statsMatch[1]);
+        item.peers = parseInt(statsMatch[2]);
+        console.log(`[LePorno] Использован резервный парсинг сидов/пиров: ${item.seeders}/${item.peers}`);
       }
     }
 
-    lepItems.push({
-      topicId: topicMatch[1],
-      magnetUrl: magnetMatch[1].replace(/^\./, ''),
-      title: titleMatch[1].replace(/&amp;/g, '&').replace(/<[^>]+>/g, '').trim(),
-      sizeBytes,
-      bitrate,
-      seeders,
-      peers
-    });
+    return item;
+  }).filter(Boolean);
 
-    if (lepItems.length >= 10) break;
-  }
-
-  // Обработка магнет-ссылок (остается без изменений)
+  // Обработка через общую функцию getInfoHash
   await Promise.all(lepItems.map(async item => {
     try {
-      const magnetUrl = `https://leporno.de${item.magnetUrl}`;
-      const res = await fetch(magnetUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          "Referer": `https://leporno.de/viewtopic.php?t=${item.topicId}`,
-          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-          "Connection": "keep-alive"
-        },
-        credentials: 'omit'
+      const magnetUri = await getInfoHash(`https://leporno.de${item.magnetUrl}`, {
+        referer: `https://leporno.de/viewtopic.php?t=${item.topicId}`,
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
       });
 
-      if (res.ok) {
-        const html = await res.text();
-        const magnetLinkMatch = html.match(/href=["'](magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^"']*)["']/i);
-
-        if (magnetLinkMatch) {
-          const magnetUri = magnetLinkMatch[1].replace(/&amp;/g, '&');
-          const hash = (magnetUri.match(/btih:([a-fA-F0-9]{40})/i) || [])[1];
-
-          if (hash && !seen.has(hash)) {
-            seen.add(hash);
-
-            Results.push({
-              Title: item.title,
-              Seeders: item.seeders,
-              Peers: item.peers,
-              Size: item.sizeBytes,
-              Bitrate: item.bitrate, // Добавлено поле битрейта
-              Tracker: "LePorno.de",
-              MagnetUri: magnetUri,
-              Link: `https://leporno.de/viewtopic.php?t=${item.topicId}`,
-              PublishDate: new Date().toISOString()
-            });
-          }
+      if (magnetUri) {
+        const hash = (magnetUri.match(/btih:([a-fA-F0-9]{40})/i) || [])[1];
+        if (hash && !seen.has(hash)) {
+          seen.add(hash);
+          Results.push({
+            Title: item.title,
+            Seeders: item.seeders,
+            Peers: item.peers,
+            Size: item.sizeBytes,
+            Bitrate: item.bitrate,
+            Tracker: "LePorno.de",
+            MagnetUri: magnetUri,
+            Link: `https://leporno.de/viewtopic.php?t=${item.topicId}`,
+            PublishDate: new Date().toISOString()
+          });
+          console.log(`[LePorno] Успешно добавлен: ${item.title}`);
         }
       }
     } catch (e) {
-      console.error("LePorno magnet error:", e.message);
+      console.error(`[LePorno] Ошибка обработки топика ${item.topicId}:`, e.message);
     }
   }));
 }
-
-
 
 
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
