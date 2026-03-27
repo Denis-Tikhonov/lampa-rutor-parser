@@ -77,48 +77,64 @@ export default {
       }
 
       // ===================================================
-      // 3. ПАРСИНГ NNMCLUB (ИСПРАВЛЕНО ВЫВОД ДАННЫХ)
+      // 3. ПАРСИНГ NNMCLUB (ИСПРАВЛЕНО)
       // ===================================================
       if (nnmBuffer) {
         const h = new TextDecoder("windows-1251").decode(nnmBuffer);
         const rows = h.match(/<tr class="p?row[12]">([\s\S]*?)<\/tr>/g) || [];
         const nnmItems = [];
+
         for (const r of rows) {
-          const t = r.match(/href="viewtopic\.php\?t=(\d+)"><b>([^<]+)<\/b>/);
+          // Парсим ID и Название
+          const t = r.match(/href="viewtopic\.php\?t=(\d+)"[^>]*><b>([^<]+)<\/b>/);
           if (t) {
-            // Предварительный парсинг из таблицы поиска (fallback)
-            const sMatch = r.match(/<u>([\d.,]+)<\/u>&nbsp;(GB|MB|KB|ГБ|МБ|КБ)/i);
-            const sdMatch = r.match(/class="seedmed"><b>(\d+)<\/b>/);
-            const lcMatch = r.match(/class="leechmed"><b>(\d+)<\/b>/);
-            nnmItems.push({ 
-                id: t[1], title: t[2].trim(), 
-                size: sMatch ? parseSizeToBytes(sMatch[1], sMatch[2]) : 0,
-                seeds: sdMatch ? parseInt(sdMatch[1]) : 0,
-                peers: lcMatch ? parseInt(lcMatch[1]) : 0
-            });
+            const id = t[1];
+            const title = t[2].trim();
+
+            // Извлекаем точный размер в байтах из тега <u>
+            const sizeMatch = r.match(/<u>(\d+)<\/u>/);
+            const size = sizeMatch ? parseInt(sizeMatch[1]) : 0;
+
+            // Извлекаем сидов (Seeders)
+            const seedsMatch = r.match(/class="seedmed"><b>(\d+)<\/b>/);
+            const seeds = seedsMatch ? parseInt(seedsMatch[1]) : 0;
+
+            // Извлекаем пиров (Leechers)
+            const peersMatch = r.match(/class="leechmed"><b>(\d+)<\/b>/);
+            const peers = peersMatch ? parseInt(peersMatch[1]) : 0;
+
+            nnmItems.push({ id, title, size, seeds, peers });
           }
         }
-        await Promise.all(nnmItems.slice(0, 12).map(async it => {
+
+        // Выполняем дозапрос только для получения Magnet-ссылок
+        await Promise.all(nnmItems.slice(0, 15).map(async it => {
           try {
             const res = await fetch(`https://nnmclub.to/forum/viewtopic.php?t=${it.id}`).then(r => r.arrayBuffer());
             const th = new TextDecoder("windows-1251").decode(res);
             const magnet = th.match(/href="(magnet:\?xt=urn:btih:([a-fA-F0-9]{40})[^"]*)"/i);
-            if (magnet && !seen.has(magnet[2].toLowerCase())) {
-              seen.add(magnet[2].toLowerCase());
-              // Битрейт из заголовка или описания
-              const bitM = th.match(/(\d+)\s*(kbps|kb\/s|mbps|бит\/с)/i);
-              const fullTitle = bitM ? `${it.title} [${bitM[0]}]` : it.title;
-              Results.push({
-                Title: fullTitle, Seeders: it.seeds, Peers: it.peers, Size: it.size,
-                Tracker: "NNMClub", MagnetUri: magnet[1].replace(/&amp;/g, '&'),
-                Link: `https://nnmclub.to/forum/viewtopic.php?t=${it.id}`,
-                PublishDate: new Date().toISOString()
-              });
+
+            if (magnet) {
+              const hash = magnet[2].toLowerCase();
+              if (!seen.has(hash)) {
+                seen.add(hash);
+                
+                Results.push({
+                  Title: it.title,
+                  Seeders: it.seeds,
+                  Peers: it.peers,
+                  Size: it.size,
+                  Tracker: "NNMClub",
+                  MagnetUri: magnet[1].replace(/&amp;/g, '&'),
+                  Link: `https://nnmclub.to/forum/viewtopic.php?t=${it.id}`,
+                  PublishDate: new Date().toISOString()
+                });
+              }
             }
           } catch (e) {}
         }));
       }
-
+     
       // ===================================================
       // 4. ПАРСИНГ XXXTOR (БЕЗ ИЗМЕНЕНИЙ)
       // ===================================================
