@@ -158,7 +158,7 @@ export default {
       }
 
 // ===================================================
-// 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕНО: ИСПОЛЬЗОВАНИЕ ПРЯМОЙ MAGNET-ССЫЛКИ)
+// 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕННАЯ ВЕРСИЯ)
 // ===================================================
 if (lepornoHtml) {
   const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
@@ -168,15 +168,11 @@ if (lepornoHtml) {
   while ((rm = rowRegex.exec(lepornoHtml)) !== null) {
     const row = rm[1];
 
-    // Извлекаем ID топика
+    // Извлекаем данные
     const topicMatch = row.match(/viewtopic\.php\?(?:[^"']*&amp;)?t=(\d+)/i);
-    // Извлекаем ПРЯМУЮ MAGNET-ССЫЛКУ
     const magnetMatch = row.match(/href=["'](\.\/download\/file\.php\?id=\d+[^"']*magnet=1[^"']*)["']/i);
-    // Извлекаем Название
     const titleMatch = row.match(/class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i);
-    // Извлекаем размер файла
     const sizeMatch = row.match(/Размер:\s*<b>([\d.]+)\s*(GB|MB|KB|ГБ|МБ|КБ)<\/b>/i);
-    // Извлекаем количество сидов и пиров
     const seedMatch = row.match(/class=["']my_tt seed["'][^>]*><b>(\d+)<\/b>/i);
     const peerMatch = row.match(/class=["']my_tt leech["'][^>]*><b>(\d+)<\/b>/i);
 
@@ -193,64 +189,104 @@ if (lepornoHtml) {
     if (lepItems.length >= 10) break;
   }
 
-  // Обрабатываем каждый найденный торрент
-  await Promise.all(lepItems.map(async item => {
-    try {
-      // Формируем полный URL для магнет-ссылок
-      const magnetUrl = `https://leporno.de${item.magnetUrl}`;
+  // Создаем сессию с куками
+  const session = new Map();
 
-      // Делаем запрос на получение магнет-ссылок
-      const res = await fetch(magnetUrl, {
+  // Обрабатываем каждый найденный торрент
+  for (const item of lepItems) {
+    try {
+      // 1. Получаем страницу подтверждения
+      const confirmUrl = `https://leporno.de${item.magnetUrl}`;
+      const confirmRes = await fetch(confirmUrl, {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
           "Referer": `https://leporno.de/viewtopic.php?t=${item.topicId}`,
           "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
           "Connection": "keep-alive"
         },
-        credentials: 'omit'
+        credentials: 'include' // Важно для куки
       });
 
-      if (res.ok) {
-        const html = await res.text();
-        // Ищем магнет-ссылку в ответе
-        const magnetLinkMatch = html.match(/href=["'](magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^"']*)["']/i);
+      if (!confirmRes.ok) {
+        console.log(`LePorno: Ошибка подтверждения (status: ${confirmRes.status})`);
+        continue;
+      }
 
-        if (magnetLinkMatch) {
-          const magnetUri = magnetLinkMatch[1].replace(/&amp;/g, '&');
-          const hash = (magnetUri.match(/btih:([a-fA-F0-9]{40})/i) || [])[1];
+      // 2. Ищем форму подтверждения
+      const confirmHtml = await confirmRes.text();
+      const formMatch = confirmHtml.match(/<form[^>]*action=["']([^"']*)["'][^>]*>([\s\S]*?)<\/form>/i);
+      if (!formMatch) {
+        console.log("LePorno: Не найдена форма подтверждения");
+        continue;
+      }
 
-          if (hash && !seen.has(hash)) {
-            seen.add(hash);
+      // 3. Отправляем подтверждение
+      const formAction = formMatch[1];
+      const formHtml = formMatch[2];
 
-            // Парсим размер если он был извлечен
-            let size = 0;
-            if (item.size) {
-              const sizeParts = item.size.match(/(\d+\.?\d*)\s*(GB|MB|KB|ГБ|МБ|КБ)/i);
-              if (sizeParts) {
-                size = parseSizeToBytes(sizeParts[1], sizeParts[2]);
-              }
+      // Ищем скрытые поля формы
+      const hiddenInputs = {};
+      const inputMatches = formHtml.matchAll(/<input[^>]*type=["']hidden["'][^>]*name=["']([^"']*)["'][^>]*value=["']([^"']*)["'][^>]*>/gi);
+      for (const match of inputMatches) {
+        hiddenInputs[match[1]] = match[2];
+      }
+
+      // Отправляем подтверждение
+      const submitRes = await fetch(formAction, {
+        method: 'POST',
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Referer": confirmUrl,
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Connection": "keep-alive"
+        },
+        body: new URLSearchParams(hiddenInputs),
+        credentials: 'include'
+      });
+
+      if (!submitRes.ok) {
+        console.log(`LePorno: Ошибка отправки подтверждения (status: ${submitRes.status})`);
+        continue;
+      }
+
+      // 4. Получаем магнет-ссылку
+      const finalHtml = await submitRes.text();
+      const magnetLinkMatch = finalHtml.match(/href=["'](magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^"']*)["']/i);
+
+      if (magnetLinkMatch) {
+        const magnetUri = magnetLinkMatch[1].replace(/&amp;/g, '&');
+        const hash = (magnetUri.match(/btih:([a-fA-F0-9]{40})/i) || [])[1];
+
+        if (hash && !seen.has(hash)) {
+          seen.add(hash);
+
+          // Парсим размер
+          let size = 0;
+          if (item.size) {
+            const sizeParts = item.size.match(/(\d+\.?\d*)\s*(GB|MB|KB|ГБ|МБ|КБ)/i);
+            if (sizeParts) {
+              size = parseSizeToBytes(sizeParts[1], sizeParts[2]);
             }
-
-            Results.push({
-              Title: item.title,
-              Seeders: item.seeders,
-              Peers: item.peers,
-              Size: size,
-              Tracker: "LePorno.de",
-              MagnetUri: magnetUri,
-              Link: `https://leporno.de/viewtopic.php?t=${item.topicId}`,
-              PublishDate: new Date().toISOString()
-            });
           }
+
+          Results.push({
+            Title: item.title,
+            Seeders: item.seeders,
+            Peers: item.peers,
+            Size: size,
+            Tracker: "LePorno.de",
+            MagnetUri: magnetUri,
+            Link: `https://leporno.de/viewtopic.php?t=${item.topicId}`,
+            PublishDate: new Date().toISOString()
+          });
         }
-      } else {
-        console.log(`LePorno: Не удалось получить магнет-ссылку (status: ${res.status})`);
       }
     } catch (e) {
-      console.error("LePorno magnet error:", e.message);
+      console.error("LePorno error:", e.message);
     }
-  }));
+  }
 }
+
 
 
 
