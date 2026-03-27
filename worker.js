@@ -2,37 +2,46 @@ export default {
   async fetch(request) {
     const url = new URL(request.url);
 
-    // CORS
+    // ===================================================
+    // CORS & OPTIONS
+    // ===================================================
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
           "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
           "Access-Control-Allow-Headers": "*",
         }
       });
     }
 
     const query = url.searchParams.get("Query") || url.searchParams.get("query");
-    if (!query) return jsonResponse({ Results: [], Indexers: [] });
+    if (!query) {
+      return jsonResponse({ Results: [], Indexers: [], Message: "Введите запрос через ?Query=" });
+    }
 
     const encodedQuery = encodeURIComponent(query);
+    const queryTokens = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+    const videoKeywords = /\b(mkv|mp4|avi|mov|wmv|ts|m2ts|remux|bluray|1080p|720p|2160p|4k|uhd)\b/i;
+
     const Results = [];
     const seen = new Set();
     const debug = { query, trackers: {} };
 
     try {
-      // 1. ПАРАЛЛЕЛЬНЫЕ ЗАПРОСЫ К ТРЕКЕРАМ
+      // ===================================================
+      // 1. ПЕРВИЧНЫЕ ЗАПРОСЫ (ПАРАЛЛЕЛЬНО)
+      // ===================================================
       const [rutorPages, nnmBuffer, xxxtorHtml, lepornoHtml] = await Promise.all([
-        // Rutor
+        // Rutor (поиск по категориям: Кино, Сериалы, Мультимедиа)
         Promise.all([1, 2, 4, 5, 10].map(cat =>
           fetch(`https://rutor.info/search/0/0/0${cat}0/0/${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.text()).catch(() => "")
         )),
-        // NNMClub (нужен Buffer для Windows-1251)
+        // NNMClub (нужен Buffer для кодировки Windows-1251)
         fetch(`https://nnmclub.to/forum/tracker.php?nm=${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.arrayBuffer()).catch(() => null),
         // XXXTor
         fetch(`https://xxxtor.com/b.php?search=${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.text()).catch(() => ""),
-        // LePorno.de
+        // LePorno.de (POST-запрос для обхода ограничений phpBB)
         fetch(`https://leporno.de/search.php`, {
           method: 'POST',
           headers: { 
@@ -44,7 +53,9 @@ export default {
         }).then(r => r.text()).catch(() => "")
       ]);
 
-      // --- ПАРСИНГ RUTOR ---
+      // ===================================================
+      // 2. ПАРСИНГ RUTOR
+      // ===================================================
       for (const html of rutorPages) {
         const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
         let m;
@@ -52,9 +63,9 @@ export default {
           const b = m[1];
           const t = b.match(/href="\/torrent\/(\d+)\/[^"]*">([^<]+)<\/a>/);
           if (!t) continue;
-          const magnet = b.match(/href="(magnet:\?[^"]+)"/);
-          if (!magnet) continue;
-          const hash = (magnet[1].match(/btih:([a-fA-F0-9]{40})/i) || [])[1];
+          const magnetMatch = b.match(/href="(magnet:\?[^"]+)"/);
+          if (!magnetMatch) continue;
+          const hash = (magnetMatch[1].match(/btih:([a-fA-F0-9]{40})/i) || [])[1];
           if (seen.has(hash)) continue; seen.add(hash);
 
           const sizeInfo = b.match(/([\d.,]+)&nbsp;(GB|MB|KB)/i);
@@ -67,68 +78,71 @@ export default {
             Peers: leech ? parseInt(leech[1]) : 0,
             Size: sizeInfo ? parseSizeToBytes(sizeInfo[1], sizeInfo[2]) : 0,
             Tracker: "Rutor",
-            MagnetUri: magnet[1],
-            Link: `https://rutor.info/torrent/${t[1]}`
+            MagnetUri: magnetMatch[1].replace(/&amp;/g, '&'),
+            Link: `https://rutor.info/torrent/${t[1]}`,
+            PublishDate: new Date().toISOString()
           });
         }
       }
 
-      // --- ПАРСИНГ NNMCLUB (с дозапросом метаданных) ---
+      // ===================================================
+      // 3. ПАРСИНГ NNMCLUB (С ДОЗАПРОСОМ МАГНЕТОВ)
+      // ===================================================
       if (nnmBuffer) {
         const h = new TextDecoder("windows-1251").decode(nnmBuffer);
         const rows = h.match(/<tr class="p?row[12]">([\s\S]*?)<\/tr>/g) || [];
-        const nnmTasks = rows.slice(0, 15).map(async r => {
+        const nnmItems = [];
+        for (const r of rows) {
           const t = r.match(/href="viewtopic\.php\?t=(\d+)"><b>([^<]+)<\/b>/);
-          if (!t) return;
-          const id = t[1];
-          const title = t[2].trim();
-          
-          const res = await fetch(`https://nnmclub.to/forum/viewtopic.php?t=${id}`).then(r => r.arrayBuffer());
-          const th = new TextDecoder("windows-1251").decode(res);
-          
-          const magnet = th.match(/href="(magnet:\?xt=urn:btih:[a-fA-F0-9]+[^"]*)"/i);
-          const size = th.match(/Размер:[\s\S]*?<b>([\d.,]+)\s*(GB|MB|KB|ГБ|МБ|КБ)<\/b>/i);
-          const seeds = th.match(/seedmed"><b>(\d+)<\/b>/) || th.match(/Сиды:[\s\S]*?(\d+)/);
-          const peers = th.match(/leechmed"><b>(\d+)<\/b>/) || th.match(/Пиры:[\s\S]*?(\d+)/);
-
-          if (magnet) Results.push({
-            Title: title,
-            Seeders: seeds ? parseInt(seeds[1]) : 0,
-            Peers: peers ? parseInt(peers[1]) : 0,
-            Size: size ? parseSizeToBytes(size[1], size[2]) : 0,
-            Tracker: "NNMClub",
-            MagnetUri: magnet[1],
-            Link: `https://nnmclub.to/forum/viewtopic.php?t=${id}`
-          });
-        });
-        await Promise.all(nnmTasks);
+          if (t) nnmItems.push({ id: t[1], title: t[2].trim() });
+        }
+        // Ограничиваем дозапросы для скорости
+        await Promise.all(nnmItems.slice(0, 15).map(async it => {
+          try {
+            const res = await fetch(`https://nnmclub.to/forum/viewtopic.php?t=${it.id}`).then(r => r.arrayBuffer());
+            const th = new TextDecoder("windows-1251").decode(res);
+            const magnet = th.match(/href="(magnet:\?xt=urn:btih:([a-fA-F0-9]{40})[^"]*)"/i);
+            if (magnet && !seen.has(magnet[2].toLowerCase())) {
+              seen.add(magnet[2].toLowerCase());
+              const size = th.match(/Размер:[\s\S]*?<b>([\d.,]+)\s*(GB|MB|KB|ГБ|МБ|КБ)<\/b>/i);
+              const seeds = th.match(/seedmed"><b>(\d+)<\/b>/);
+              Results.push({
+                Title: it.title, Seeders: seeds ? parseInt(seeds[1]) : 0, Peers: 0,
+                Size: size ? parseSizeToBytes(size[1], size[2]) : 0,
+                Tracker: "NNMClub", MagnetUri: magnet[1].replace(/&amp;/g, '&'),
+                Link: `https://nnmclub.to/forum/viewtopic.php?t=${it.id}`,
+                PublishDate: new Date().toISOString()
+              });
+            }
+          } catch (e) {}
+        }));
       }
 
-      // --- ПАРСИНГ XXXTOR ---
+      // ===================================================
+      // 4. ПАРСИНГ XXXTOR
+      // ===================================================
       const xtRows = xxxtorHtml.match(/<tr\s+class=["']gai["'][^>]*>([\s\S]*?)<\/tr>/gi) || [];
       for (const r of xtRows) {
         const t = r.match(/<a\s+href=["']\/torrent\/(\d+)\/["'][^>]*>([^<]+)<\/a>/i);
         if (!t) continue;
         const magnet = r.match(/href=["'](magnet:\?xt=urn:btih:([a-fA-F0-9]{40})[^"']*)["']/i);
-        if (!magnet) continue;
-        if (seen.has(magnet[2].toLowerCase())) continue; seen.add(magnet[2].toLowerCase());
-
-        const size = r.match(/<td\s+align=["']right["'][^>]*>([\d.,]+)\s*&nbsp;\s*(TB|GB|MB|KB)/i);
-        const seeds = r.match(/class=["']green["'][^>]*>[\s\S]*?&nbsp;(\d+)/i);
-        const leech = r.match(/class=["']red["'][^>]*>[\s\S]*?&nbsp;(\d+)/i);
-
-        Results.push({
-          Title: t[2].trim(),
-          Seeders: seeds ? parseInt(seeds[1]) : 0,
-          Peers: leech ? parseInt(leech[1]) : 0,
-          Size: size ? parseSizeToBytes(size[1], size[2]) : 0,
-          Tracker: "XXXTor",
-          MagnetUri: magnet[1].replace(/&amp;/g, '&'),
-          Link: `https://xxxtor.com/torrent/${t[1]}/`
-        });
+        if (magnet && !seen.has(magnet[2].toLowerCase())) {
+          seen.add(magnet[2].toLowerCase());
+          const size = r.match(/<td\s+align=["']right["'][^>]*>([\d.,]+)\s*&nbsp;\s*(TB|GB|MB|KB)/i);
+          const seeds = r.match(/class=["']green["'][^>]*>[\s\S]*?&nbsp;(\d+)/i);
+          Results.push({
+            Title: t[2].trim(), Seeders: seeds ? parseInt(seeds[1]) : 0, Peers: 0,
+            Size: size ? parseSizeToBytes(size[1], size[2]) : 0,
+            Tracker: "XXXTor", MagnetUri: magnet[1].replace(/&amp;/g, '&'),
+            Link: `https://xxxtor.com/torrent/${t[1]}/`,
+            PublishDate: new Date().toISOString()
+          });
+        }
       }
 
-      // --- ПАРСИНГ LEPORNO.DE (полный фарш) ---
+      // ===================================================
+      // 5. ПАРСИНГ LEPORNO.DE (ГЛУБОКИЙ ПАРСИНГ)
+      // ===================================================
       if (lepornoHtml) {
         const topicRegex = /viewtopic\.php\?[^"']*t=(\d+)[^"']*["'][^>]*class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/gi;
         const lepItems = [];
@@ -142,28 +156,18 @@ export default {
           try {
             const res = await fetch(`https://leporno.de/viewtopic.php?t=${item.id}`);
             const h = await res.text();
-
             const fileId = h.match(/download\/file\.php\?id=(\d+)/);
-            if (!fileId) return;
-
-            const size = h.match(/(?:Размер|Größe|Size):\s*<b>([\d.,]+)\s*&nbsp;\s*(TB|GB|MB|KB|ТБ|ГБ|МБ|КБ)/i);
-            const seeds = h.match(/class=["'][^"']*seed[^"']*["'][^>]*><b>(\d+)<\/b>/i);
-            const leech = h.match(/class=["'][^"']*leech[^"']*["'][^>]*><b>(\d+)<\/b>/i);
-            
-            // Попробуем выдрать битрейт из текста, если он есть (напр. 6000 kbps)
-            const bitrate = h.match(/(\d+)\s*(kbps|kb\/s|mbps)/i);
-            let finalTitle = item.title;
-            if (bitrate) finalTitle += ` [${bitrate[0]}]`;
-
-            Results.push({
-              Title: finalTitle,
-              Seeders: seeds ? parseInt(seeds[1]) : 0,
-              Peers: leech ? parseInt(leech[1]) : 0,
-              Size: size ? parseSizeToBytes(size[1], size[2]) : 0,
-              Tracker: "LePorno.de",
-              MagnetUri: `https://leporno.de/download/file.php?id=${fileId[1]}&magnet=1`,
-              Link: `https://leporno.de/viewtopic.php?t=${item.id}`
-            });
+            if (fileId) {
+              const size = h.match(/(?:Размер|Größe|Size):\s*<b>([\d.,]+)\s*&nbsp;\s*(TB|GB|MB|KB|ТБ|ГБ|МБ|КБ)/i);
+              const seeds = h.match(/class=["'][^"']*seed[^"']*["'][^>]*><b>(\d+)<\/b>/i);
+              Results.push({
+                Title: item.title, Seeders: seeds ? parseInt(seed[1]) : 0, Peers: 0,
+                Size: size ? parseSizeToBytes(size[1], size[2]) : 0,
+                Tracker: "LePorno.de", MagnetUri: `https://leporno.de/download/file.php?id=${fileId[1]}&magnet=1`,
+                Link: `https://leporno.de/viewtopic.php?t=${item.id}`,
+                PublishDate: new Date().toISOString()
+              });
+            }
           } catch (e) {}
         }));
       }
@@ -172,18 +176,20 @@ export default {
       debug.error = e.message;
     }
 
-    // Финальная сортировка: сначала живые (много сидов), потом по размеру
-    Results.sort((a, b) => (b.Seeders - a.Seeders) || (b.Size - a.Size));
+    // Сортировка: сначала те, где больше сидов
+    Results.sort((a, b) => b.Seeders - a.Seeders);
 
     return jsonResponse({ 
       Results, 
       Indexers: ["Rutor", "NNMClub", "XXXTor", "LePorno.de"],
-      TotalResults: Results.length
+      Total: Results.length,
+      Debug: debug 
     });
   }
 };
 
-// Универсальный конвертер размера в байты
+// --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+
 function parseSizeToBytes(num, unit) {
   if (!num) return 0;
   const n = parseFloat(num.replace(",", "."));
