@@ -264,7 +264,7 @@ if (lepornoHtml) {
     const fileId = fileIdMatch ? fileIdMatch[1] : null;
     
     // Извлекаем размер (может быть в разных форматах) - ИСПРАВЛЕН СИНТАКСИС
-    const sizeMatch = row.match(/(?:Размер|Size|Größe):\s*<b>([\d.,]+)&nbsp;([TGMK]Б|[TGMK]B)/i);
+    const sizeMatch = row.match(/(?:Размер|Size):\s*<b>([\d.,]+)&nbsp;([TGMK]Б|[TGMK]B)/i);
     let size = 0;
     if (sizeMatch) {
       size = parseSizeToBytes(sizeMatch[1], sizeMatch[2]);
