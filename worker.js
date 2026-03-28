@@ -414,3 +414,7 @@ function jsonResponse(data) {
     headers: { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" }
   });
 }
+// В конец файла нужно добавить:
+  }  // закрыть try (строка 30)
+  }  // закрыть async fetch (строка 2)
+}    // закрыть export default (строка 1)
