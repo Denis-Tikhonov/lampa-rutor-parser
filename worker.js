@@ -331,3 +331,10 @@ function jsonResponse(data) {
     headers: { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" }
   });
 }
+  } catch (e) {
+    return jsonResponse({ Results: [], Indexers: [], Message: e.message });
+  }
+  
+  return jsonResponse({ Results, Indexers: [], Message: "OK" });
+}
+}
