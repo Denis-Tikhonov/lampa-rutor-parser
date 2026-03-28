@@ -367,10 +367,7 @@ if (lepornoHtml) {
   }));
 }
 
-
-
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-
 async function getInfoHash(buffer) {
   try {
     const uint8 = new Uint8Array(buffer);
@@ -417,3 +414,13 @@ function jsonResponse(data) {
     headers: { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" }
   });
 }
+
+// Экспорт по умолчанию для Cloudflare Workers
+export default {
+  async fetch(request, env, ctx) {
+    // ... ваш основной код обработки запроса ...
+    
+    // В конце должна быть закрывающая скобка для функции fetch
+    return jsonResponse(Results);
+  }
+};
