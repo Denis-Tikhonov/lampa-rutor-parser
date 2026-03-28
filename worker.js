@@ -25,14 +25,17 @@ export default {
       let lepornoError = null;
       let lepornoStatus = 0;
       
+      // Пробуем POST запрос как в оригинале
       try {
-        const lepornoRes = await fetch(`https://leporno.de/search.php?tracker_search=torrent&keywords=${encodedQuery}&terms=all&sc=1&sf=titleonly&sk=t&sd=d&sr=topics&st=0&ch=300&t=0&submit=Поиск`, {
+        const lepornoRes = await fetch(`https://leporno.de/search.php`, {
+          method: 'POST',
           headers: { 
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", 
-            "Referer": "https://leporno.de/",
+            "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8"
-          }
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+          },
+          body: `keywords=${encodedQuery}&tracker_search=torrent&terms=all&sf=titleonly&sr=topics&submit=Search`
         });
         lepornoStatus = lepornoRes.status;
         lepornoHtml = await lepornoRes.text();
@@ -175,7 +178,6 @@ export default {
           
           debug.trackers.leporno.parsing.itemsParsed++;
           
-          // Сохраняем первый элемент для отладки
           if (lepItems.length === 0) {
             debug.trackers.leporno.firstItem = { fileId, title: title.substring(0, 50), size, seeds, leechers };
           }
@@ -186,7 +188,6 @@ export default {
         
         debug.trackers.leporno.totalItems = lepItems.length;
         
-        // Получаем magnet-ссылки
         let magnetSuccess = 0;
         await Promise.all(lepItems.map(async item => {
           try {
@@ -202,7 +203,6 @@ export default {
             const location = magnetRes.headers.get('Location');
             const status = magnetRes.status;
             
-            // Отладка первого магнета
             if (!debug.trackers.leporno.magnetDebug) {
               debug.trackers.leporno.magnetDebug = {
                 fileId: item.fileId,
