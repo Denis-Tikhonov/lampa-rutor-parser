@@ -418,6 +418,6 @@ function jsonResponse(data) {
       // обработка ошибок главного try
     }
     
-    return jsonResponse({ Results, Indexers: [], Message: \"OK\" });
+    return jsonResponse({ Results, Indexers: [], Message: "OK" });
   }
 }
