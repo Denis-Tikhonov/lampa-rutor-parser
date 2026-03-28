@@ -25,7 +25,6 @@ export default {
       let lepornoError = null;
       let lepornoStatus = 0;
       
-      // Пробуем POST запрос как в оригинале
       try {
         const lepornoRes = await fetch(`https://leporno.de/search.php`, {
           method: 'POST',
@@ -43,15 +42,10 @@ export default {
         lepornoError = e.message;
       }
       
-      // Отладка LePorno
       debug.trackers.leporno = {
         status: lepornoStatus,
         error: lepornoError,
-        htmlLength: lepornoHtml.length,
-        htmlStart: lepornoHtml.substring(0, 500),
-        containsMiddle: lepornoHtml.includes('valign="middle"'),
-        containsTopictitle: lepornoHtml.includes('topictitle'),
-        containsDownload: lepornoHtml.includes('download/file.php')
+        htmlLength: lepornoHtml.length
       };
       
       const [rutorPages, nnmBuffer, xxxtorHtml] = await Promise.all([
@@ -149,10 +143,7 @@ export default {
         const lepItems = [];
         let rm;
         
-        debug.trackers.leporno.parsing = { rowsFound: 0, itemsParsed: 0 };
-        
         while ((rm = rowRegex.exec(lepornoHtml)) !== null) {
-          debug.trackers.leporno.parsing.rowsFound++;
           const row = rm[1];
           
           const fileIdMatch = row.match(/download\/file\.php\?id=(\d+)/);
@@ -176,61 +167,73 @@ export default {
           const leechMatch = row.match(/class=["']my_tt leech["'][^>]*><b>(\d+)<\/b>/i);
           const leechers = leechMatch ? parseInt(leechMatch[1]) : 0;
           
-          debug.trackers.leporno.parsing.itemsParsed++;
-          
-          if (lepItems.length === 0) {
-            debug.trackers.leporno.firstItem = { fileId, title: title.substring(0, 50), size, seeds, leechers };
-          }
-          
           lepItems.push({ fileId, title, topicId, forumId, size, seeds, leechers });
           if (lepItems.length >= 15) break;
         }
         
         debug.trackers.leporno.totalItems = lepItems.length;
         
+        // Получаем hash из торрент-файла
         let magnetSuccess = 0;
         await Promise.all(lepItems.map(async item => {
           try {
-            const magnetUrl = `https://leporno.de/download/file.php?id=${item.fileId}&magnet=1&confirm=1`;
-            const magnetRes = await fetch(magnetUrl, {
+            // Скачиваем торрент-файл
+            const torrentUrl = `https://leporno.de/download/file.php?id=${item.fileId}`;
+            const torrentRes = await fetch(torrentUrl, {
               headers: { 
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Referer": "https://leporno.de/"
-              },
-              redirect: 'manual'
+              }
             });
             
-            const location = magnetRes.headers.get('Location');
-            const status = magnetRes.status;
+            const contentType = torrentRes.headers.get('Content-Type') || '';
             
-            if (!debug.trackers.leporno.magnetDebug) {
-              debug.trackers.leporno.magnetDebug = {
-                fileId: item.fileId,
-                status: status,
-                hasLocation: !!location,
-                locationStart: location ? location.substring(0, 80) : 'NULL'
-              };
-            }
-            
-            if (location && location.startsWith('magnet:')) {
-              const magnetUri = location;
-              const hashMatch = magnetUri.match(/btih:([a-fA-F0-9]{40})/i);
-              const hash = hashMatch ? hashMatch[1].toLowerCase() : null;
+            // Проверяем, что это торрент-файл
+            if (torrentRes.status === 200 && (contentType.includes('torrent') || contentType.includes('octet-stream'))) {
+              const torrentBuffer = await torrentRes.arrayBuffer();
+              const hash = await getInfoHash(torrentBuffer);
+              
+              if (!debug.trackers.leporno.torrentDebug) {
+                debug.trackers.leporno.torrentDebug = {
+                  fileId: item.fileId,
+                  status: torrentRes.status,
+                  contentType: contentType,
+                  bufferSize: torrentBuffer.byteLength,
+                  hash: hash ? hash.substring(0, 20) + '...' : 'NULL'
+                };
+              }
               
               if (hash && !seen.has(hash)) {
                 seen.add(hash);
                 magnetSuccess++;
+                
+                // Формируем magnet-ссылку с трекерами
+                const magnetUri = `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}&tr=udp://tracker.opentrackr.org:1337/announce&tr=udp://open.stealth.si:80/announce&tr=udp://tracker.torrent.eu.org:451/announce`;
+                
                 Results.push({
-                  Title: item.title, Seeders: item.seeds, Peers: item.leechers, Size: item.size,
-                  Tracker: "LePorno.de", MagnetUri: magnetUri,
+                  Title: item.title,
+                  Seeders: item.seeds,
+                  Peers: item.leechers,
+                  Size: item.size,
+                  Tracker: "LePorno.de",
+                  MagnetUri: magnetUri,
                   Link: `https://leporno.de/viewtopic.php?f=${item.forumId}&t=${item.topicId}`,
                   PublishDate: new Date().toISOString()
                 });
               }
+            } else {
+              if (!debug.trackers.leporno.torrentDebug) {
+                debug.trackers.leporno.torrentDebug = {
+                  fileId: item.fileId,
+                  status: torrentRes.status,
+                  contentType: contentType,
+                  error: 'Not a torrent file'
+                };
+              }
             }
           } catch (e) {
-            if (!debug.trackers.leporno.magnetError) {
-              debug.trackers.leporno.magnetError = e.message;
+            if (!debug.trackers.leporno.torrentError) {
+              debug.trackers.leporno.torrentError = e.message;
             }
           }
         }));
@@ -246,6 +249,51 @@ export default {
     return jsonResponse({ Results, Indexers: ["Rutor", "NNMClub", "XXXTor", "LePorno.de"], Total: Results.length, Debug: debug });
   }
 };
+
+// Функция извлечения info_hash из торрент-файла
+async function getInfoHash(buffer) {
+  try {
+    const uint8 = new Uint8Array(buffer);
+    const decoder = new TextDecoder('latin1');
+    const data = decoder.decode(uint8);
+    
+    const infoKey = "4:info";
+    const infoIndex = data.indexOf(infoKey);
+    if (infoIndex === -1) return null;
+    
+    const infoStart = infoIndex + infoKey.length;
+    let pos = infoStart;
+    let depth = 0;
+    
+    if (data[pos] !== 'd') return null;
+    
+    while (pos < data.length) {
+      const char = data[pos];
+      if (char === 'd' || char === 'l') {
+        depth++;
+      } else if (char === 'e') {
+        depth--;
+        if (depth === 0) break;
+      } else if (char >= '0' && char <= '9') {
+        let numEnd = pos;
+        while (data[numEnd] >= '0' && data[numEnd] <= '9') numEnd++;
+        if (data[numEnd] === ':') {
+          const len = parseInt(data.substring(pos, numEnd));
+          pos = numEnd + len;
+        }
+      }
+      pos++;
+    }
+    
+    const infoEnd = pos + 1;
+    const infoBytes = uint8.slice(infoStart, infoEnd);
+    const hashBuffer = await crypto.subtle.digest('SHA-1', infoBytes);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch (e) { 
+    return null; 
+  }
+}
 
 function parseSizeToBytes(num, unit) {
   if (!num) return 0;
