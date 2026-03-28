@@ -119,112 +119,104 @@ export default {
         }
       }
 
-      // =====================================================================
-      // 5. LEPORNO.DE — ПОЛНОСТЬЮ ПЕРЕРАБОТАННЫЙ БЛОК
-      // =====================================================================
-      if (lepornoHtml && lepornoHtml.length > 100) {
-        debugLog.push(`LePorno HTML length: ${lepornoHtml.length}`);
+// =====================================================================
+// 5. LEPORNO.DE — ИСПРАВЛЕННОЕ ФОРМИРОВАНИЕ МАГНЕТ-ССЫЛКИ
+// =====================================================================
+if (lepornoHtml && lepornoHtml.length > 100) {
+  debugLog.push(`LePorno HTML length: ${lepornoHtml.length}`);
 
-        const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
-        const lepItems = [];
-        let rm;
+  const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
+  const lepItems = [];
+  let rm;
 
-        while ((rm = rowRegex.exec(lepornoHtml)) !== null) {
-          const row = rm[1];
+  while ((rm = rowRegex.exec(lepornoHtml)) !== null) {
+    const row = rm[1];
 
-          const fileIdMatch = row.match(/download\/file\.php\?id=(\d+)/);
-          if (!fileIdMatch) continue;
-          const fileId = fileIdMatch[1];
+    const fileIdMatch = row.match(/download\/file\.php\?id=(\d+)/);
+    if (!fileIdMatch) continue;
+    const fileId = fileIdMatch[1];
 
-          const titleMatch = row.match(/class=["']topictitle["'][^>]*>([^<]+)<\/a>/i);
-          if (!titleMatch) continue;
-          const title = titleMatch[1].trim();
+    const titleMatch = row.match(/class=["']topictitle["'][^>]*>([^<]+)<\/a>/i);
+    if (!titleMatch) continue;
+    const title = titleMatch[1].trim();
 
-          const topicMatch = row.match(/viewtopic\.php\?f=(\d+)&amp;t=(\d+)/);
-          const topicId = topicMatch ? topicMatch[2] : fileId;
-          const forumId = topicMatch ? topicMatch[1] : '0';
+    const topicMatch = row.match(/viewtopic\.php\?f=(\d+)&amp;t=(\d+)/);
+    const topicId = topicMatch ? topicMatch[2] : fileId;
+    const forumId = topicMatch ? topicMatch[1] : '0';
 
-          const sizeMatch = row.match(/Размер:\s*<b>([\d.,]+)&nbsp;(ТБ|ГБ|МБ|КБ|TB|GB|MB|KB)<\/b>/i);
-          const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
+    const sizeMatch = row.match(/Размер:\s*<b>([\d.,]+)&nbsp;(ТБ|ГБ|МБ|КБ|TB|GB|MB|KB)<\/b>/i);
+    const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
 
-          const seedMatch = row.match(/class=["']my_tt seed["'][^>]*><b>(\d+)<\/b>/i);
-          const seeds = seedMatch ? parseInt(seedMatch[1]) : 0;
+    const seedMatch = row.match(/class=["']my_tt seed["'][^>]*><b>(\d+)<\/b>/i);
+    const seeds = seedMatch ? parseInt(seedMatch[1]) : 0;
 
-          const leechMatch = row.match(/class=["']my_tt leech["'][^>]*><b>(\d+)<\/b>/i);
-          const leechers = leechMatch ? parseInt(leechMatch[1]) : 0;
+    const leechMatch = row.match(/class=["']my_tt leech["'][^>]*><b>(\d+)<\/b>/i);
+    const leechers = leechMatch ? parseInt(leechMatch[1]) : 0;
 
-          lepItems.push({ fileId, title, topicId, forumId, size, seeds, leechers });
-          if (lepItems.length >= 15) break;
-        }
-
-        debugLog.push(`LePorno items found: ${lepItems.length}`);
-
-        await Promise.all(lepItems.map(async item => {
-          try {
-            const torrentRes = await fetch(`https://leporno.de/download/file.php?id=${item.fileId}`, {
-              headers: {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Referer": "https://leporno.de/"
-              },
-              redirect: 'follow'
-            });
-
-            const contentType = torrentRes.headers.get('Content-Type') || '';
-            debugLog.push(`File ${item.fileId}: status=${torrentRes.status}, type=${contentType}`);
-
-            if (torrentRes.status === 200 &&
-                (contentType.includes('torrent') || contentType.includes('octet-stream') || contentType.includes('x-bittorrent'))) {
-
-              const torrentBuffer = await torrentRes.arrayBuffer();
-              debugLog.push(`File ${item.fileId}: buffer size=${torrentBuffer.byteLength}`);
-
-              const hash = await getInfoHashFixed(torrentBuffer);
-              debugLog.push(`File ${item.fileId}: hash=${hash}`);
-
-              if (hash && !seen.has(hash)) {
-                seen.add(hash);
-
-                const trackers = [
-                  'udp://tracker.opentrackr.org:1337/announce',
-                  'udp://open.stealth.si:80/announce',
-                  'udp://tracker.torrent.eu.org:451/announce',
-                  'udp://tracker.openbittorrent.com:80/announce',
-                  'udp://exodus.desync.com:6969/announce'
-                ];
-                const trParams = trackers.map(t => `tr=${encodeURIComponent(t)}`).join('&');
-                const magnetUri = `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}&${trParams}`;
-
-                Results.push({
-                  Title: item.title,
-                  Seeders: item.seeds,
-                  Peers: item.leechers,
-                  Size: item.size,
-                  Tracker: "LePorno.de",
-                  MagnetUri: magnetUri,
-                  Link: `https://leporno.de/viewtopic.php?f=${item.forumId}&t=${item.topicId}`,
-                  PublishDate: new Date().toISOString()
-                });
-              }
-            }
-          } catch (e) {
-            debugLog.push(`File ${item.fileId}: error=${e.message}`);
-          }
-        }));
-      }
-
-    } catch (e) {
-      debugLog.push(`Global error: ${e.message}`);
-    }
-
-    Results.sort((a, b) => b.Seeders - a.Seeders);
-    return jsonResponse({
-      Results,
-      Indexers: ["Rutor", "NNMClub", "XXXTor", "LePorno.de"],
-      Total: Results.length,
-      _debug_leporno: debugLog  // <-- убрать после отладки
-    });
+    lepItems.push({ fileId, title, topicId, forumId, size, seeds, leechers });
+    if (lepItems.length >= 15) break;
   }
-};
+
+  debugLog.push(`LePorno items found: ${lepItems.length}`);
+
+  await Promise.all(lepItems.map(async item => {
+    try {
+      const torrentRes = await fetch(`https://leporno.de/download/file.php?id=${item.fileId}`, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Referer": "https://leporno.de/"
+        },
+        redirect: 'follow'
+      });
+
+      const contentType = torrentRes.headers.get('Content-Type') || '';
+      debugLog.push(`File ${item.fileId}: status=${torrentRes.status}, type=${contentType}`);
+
+      if (torrentRes.status === 200 &&
+          (contentType.includes('torrent') || contentType.includes('octet-stream') || contentType.includes('x-bittorrent'))) {
+
+        const torrentBuffer = await torrentRes.arrayBuffer();
+        debugLog.push(`File ${item.fileId}: buffer size=${torrentBuffer.byteLength}`);
+
+        const hash = await getInfoHashFixed(torrentBuffer);
+        debugLog.push(`File ${item.fileId}: hash=${hash}`);
+
+        if (hash && !seen.has(hash)) {
+          seen.add(hash);
+
+          // ============================================
+          // КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: трекеры БЕЗ кодирования
+          // Lampa ожидает tr=udp://... а не tr=udp%3A%2F%2F...
+          // ============================================
+          const trackers = [
+            'udp://tracker.opentrackr.org:1337/announce',
+            'udp://open.stealth.si:80/announce',
+            'udp://tracker.torrent.eu.org:451/announce',
+            'udp://tracker.openbittorrent.com:80/announce',
+            'udp://exodus.desync.com:6969/announce'
+          ];
+          const trParams = trackers.map(t => '&tr=' + t).join('');
+          const magnetUri = 'magnet:?xt=urn:btih:' + hash + '&dn=' + encodeURIComponent(item.title) + trParams;
+
+          debugLog.push(`File ${item.fileId}: magnet generated OK`);
+
+          Results.push({
+            Title: item.title,
+            Seeders: item.seeds,
+            Peers: item.leechers,
+            Size: item.size,
+            Tracker: "LePorno.de",
+            MagnetUri: magnetUri,
+            Link: `https://leporno.de/viewtopic.php?f=${item.forumId}&t=${item.topicId}`,
+            PublishDate: new Date().toISOString()
+          });
+        }
+      }
+    } catch (e) {
+      debugLog.push(`File ${item.fileId}: error=${e.message}`);
+    }
+  }));
+}
 
 // =====================================================================
 // ИСПРАВЛЕННЫЙ bencode-парсер info_hash
