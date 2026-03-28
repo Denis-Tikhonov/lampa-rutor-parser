@@ -37,16 +37,11 @@ export default {
         )),
         fetch(`https://nnmclub.to/forum/tracker.php?nm=${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.arrayBuffer()).catch(() => null),
         fetch(`https://xxxtor.com/b.php?search=${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.text()).catch(() => ""),
-        fetch(`https://leporno.de/search.php`, {
-          method: 'POST',
-          headers: { 
+        fetch(`https://leporno.de/search.php?tracker_search=torrent&keywords=${encodedQuery}&terms=all&sc=1&sf=titleonly&sk=t&sd=d&sr=topics&st=0&ch=300&t=0&submit=Поиск`, {
+          headers: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Referer": "https://leporno.de/search.php"
-          },
-          body: new URLSearchParams({ 
-            'keywords': query, 'terms': 'all', 'sr': 'topics', 'sf': 'titleonly', 'submit': 'Search' 
-          }).toString()
+            "Referer": "https://leporno.de/"
+          }
         }).then(r => r.text()).catch(() => "")
       ]);
 
@@ -157,56 +152,83 @@ export default {
         }
       }
 
-      // ===================================================
-      // 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕНО: РАЗМЕР, БИТРЕЙТ, СИДЫ)
+           // ===================================================
+      // 5. ПАРСИНГ LEPORNO.DE (ПОЛНОСТЬЮ ПЕРЕРАБОТАН)
       // ===================================================
       if (lepornoHtml) {
         const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
         const lepItems = [];
         let rm;
+        
         while ((rm = rowRegex.exec(lepornoHtml)) !== null) {
           const row = rm[1];
-          const topicMatch = row.match(/href=["']\.\/viewtopic\.php\?(?:f=\d+&amp;)?t=(\d+)[^"']*["']\s+class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i);
-          if (topicMatch) {
-            // Предварительный поиск размера и сидов в строке (если есть)
-            const sM = row.match(/>([\d.,]+)\s*(GB|MB|KB|ГБ|МБ|КБ)<\/td>/i);
-            const sdM = row.match(/class=["']my_tt\s+seed["'][^>]*><b>(\d+)<\/b>/i);
-            lepItems.push({ 
-                id: topicMatch[1], title: topicMatch[2].replace(/<[^>]+>/g, '').trim(),
-                size: sM ? parseSizeToBytes(sM[1], sM[2]) : 0,
-                seeds: sdM ? parseInt(sdM[1]) : 0
-            });
-          }
+          
+          // Извлекаем ID файла для скачивания торрента/магнета
+          const fileIdMatch = row.match(/download\/file\.php\?id=(\d+)/);
+          if (!fileIdMatch) continue;
+          
+          const fileId = fileIdMatch[1];
+          
+          // Извлекаем название из topictitle
+          const titleMatch = row.match(/class=["']topictitle["'][^>]*>([^<]+)<\/a>/i);
+          if (!titleMatch) continue;
+          
+          const title = titleMatch[1].trim();
+          
+          // Извлекаем Topic ID для ссылки на страницу
+          const topicMatch = row.match(/viewtopic\.php\?f=(\d+)&amp;t=(\d+)/);
+          const topicId = topicMatch ? topicMatch[2] : fileId;
+          const forumId = topicMatch ? topicMatch[1] : '0';
+          
+          // Извлекаем размер: "Размер: <b>317.68&nbsp;МБ</b>"
+          const sizeMatch = row.match(/Размер:\s*<b>([\d.,]+)&nbsp;(ТБ|ГБ|МБ|КБ|TB|GB|MB|KB)<\/b>/i);
+          const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
+          
+          // Извлекаем сиды: <span class="my_tt seed"><b>40</b></span>
+          const seedMatch = row.match(/class=["']my_tt\s+seed["'][^>]*><b>(\d+)<\/b>/i);
+          const seeds = seedMatch ? parseInt(seedMatch[1]) : 0;
+          
+          // Извлекаем личи: <span class="my_tt leech"><b>8</b></span>
+          const leechMatch = row.match(/class=["']my_tt\s+leech["'][^>]*><b>(\d+)<\/b>/i);
+          const leechers = leechMatch ? parseInt(leechMatch[1]) : 0;
+          
+          lepItems.push({ fileId, title, topicId, forumId, size, seeds, leechers });
+          
           if (lepItems.length >= 15) break;
         }
-
+        
+        // Параллельно получаем magnet-ссылки через редирект
         await Promise.all(lepItems.map(async item => {
           try {
-            const res = await fetch(`https://leporno.de/viewtopic.php?t=${item.id}`);
-            const h = await res.text();
-            const fMatch = h.match(/download\/file\.php\?id=(\d+)/);
-            if (fMatch) {
-              const fId = fMatch[1];
-              // Скачиваем торрент для HASH (если нужно) или берем из магнета
-              const torRes = await fetch(`https://leporno.de/download/file.php?id=${fId}`);
-              const torBuf = await torRes.arrayBuffer();
-              const hash = await getInfoHash(torBuf);
-
+            const magnetUrl = `https://leporno.de/download/file.php?id=${item.fileId}&magnet=1&confirm=1`;
+            const magnetRes = await fetch(magnetUrl, {
+              headers: { 
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://leporno.de/"
+              },
+              redirect: 'manual'  // Не следовать редиректу, получить Location
+            });
+            
+            // Magnet-ссылка в заголовке Location
+            const location = magnetRes.headers.get('Location');
+            
+            if (location && location.startsWith('magnet:')) {
+              const magnetUri = decodeURIComponent(location);
+              
+              // Извлекаем hash из magnet
+              const hashMatch = magnetUri.match(/btih:([a-fA-F0-9]{40})/i);
+              const hash = hashMatch ? hashMatch[1].toLowerCase() : null;
+              
               if (hash && !seen.has(hash)) {
                 seen.add(hash);
-                // Уточняем данные со страницы топика
-                const szDetail = h.match(/(?:Размер|Size|Größe):\s*<b>([\d.,]+)\s*&nbsp;\s*(TB|GB|MB|KB|ТБ|ГБ|МБ|КБ)/i);
-                const sdDetail = h.match(/class=["']my_tt\s+seed["'][^>]*><b>(\d+)<\/b>/i);
-                const bitDetail = h.match(/(\d+)\s*(kbps|kb\/s|mbps)/i);
-
                 Results.push({
-                  Title: bitDetail ? `${item.title} [${bitDetail[0]}]` : item.title,
-                  Seeders: sdDetail ? parseInt(sdDetail[1]) : item.seeds,
-                  Peers: 0,
-                  Size: szDetail ? parseSizeToBytes(szDetail[1], szDetail[2]) : item.size,
+                  Title: item.title,
+                  Seeders: item.seeds,
+                  Peers: item.leechers,
+                  Size: item.size,
                   Tracker: "LePorno.de",
-                  MagnetUri: `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}`,
-                  Link: `https://leporno.de/viewtopic.php?t=${item.id}`,
+                  MagnetUri: magnetUri,
+                  Link: `https://leporno.de/viewtopic.php?f=${item.forumId}&t=${item.topicId}`,
                   PublishDate: new Date().toISOString()
                 });
               }
@@ -215,12 +237,6 @@ export default {
         }));
       }
 
-    } catch (e) { debug.error = e.message; }
-
-    Results.sort((a, b) => b.Seeders - a.Seeders);
-    return jsonResponse({ Results, Indexers: ["Rutor", "NNMClub", "XXXTor", "LePorno.de"], Total: Results.length });
-  }
-};
 
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
