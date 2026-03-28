@@ -28,111 +28,27 @@ export default {
     const debug = { query, trackers: {} };
 
     try {
-      
       // ===================================================
-// 1. ПЕРВИЧНЫЕ ЗАПРОСЫ (ИСПРАВЛЕННЫЙ)
-// ===================================================
-const encodedQuery = encodeURIComponent(query);
-let pirateHtml = "";
-let rutrackerHtml = "";
-let nnmHtml = "";
-let lepornoHtml = "";
-let tfileHtml = "";
-
-// Запросы выполняются параллельно
-await Promise.all([
-  // PirateBay
-  (async () => {
-    pirateHtml = await fetch(`https://apibay.org/q.php?q=${encodedQuery}&cat=0`, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-      }
-    }).then(r => r.text()).catch(() => "");
-  })(),
-  
-  // Rutracker
-  (async () => {
-    rutrackerHtml = await fetch(`https://rutracker.org/forum/tracker.php?nm=${encodedQuery}`, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Cookie": "bb_session=0"
-      }
-    }).then(r => r.text()).catch(() => "");
-  })(),
-  
-  // NNM-Club
-  (async () => {
-    nnmHtml = await fetch(`https://nnmclub.to/forum/tracker.php?nm=${encodedQuery}`, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Cookie": "bb_session=0"
-      }
-    }).then(r => r.text()).catch(() => "");
-  })(),
-  
-  // LePorno.de (ИСПРАВЛЕННЫЙ ЗАПРОС)
-  (async () => {
-    try {
-      // Используем параметры поиска как на реальном сайте
-      const searchUrl = `https://leporno.de/search.php?tracker_search=torrent&keywords=${encodedQuery}&terms=all&author=&sc=1&sf=titleonly&sk=t&sd=d&sr=topics&st=0&ch=300&t=0&submit=%D0%9F%D0%BE%D0%B8%D1%81%D0%BA`;
-      
-      lepornoHtml = await fetch(searchUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-          "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-          "Accept-Encoding": "gzip, deflate, br",
-          "Referer": "https://leporno.de/search.php",
-          "Connection": "keep-alive",
-          "Upgrade-Insecure-Requests": "1",
-          "Sec-Fetch-Dest": "document",
-          "Sec-Fetch-Mode": "navigate",
-          "Sec-Fetch-Site": "same-origin",
-          "Cache-Control": "max-age=0"
-        },
-        // Добавляем таймаут и обработку редиректов
-        timeout: 10000,
-        redirect: "follow"
-      }).then(async r => {
-        if (r.ok) {
-          return await r.text();
-        } else {
-          console.error(`LePorno request failed: ${r.status} ${r.statusText}`);
-          return "";
-        }
-      }).catch(e => {
-        console.error(`LePorno fetch error: ${e.message}`);
-        return "";
-      });
-      
-      // Проверяем, что получили HTML с результатами
-      if (lepornoHtml && !lepornoHtml.includes('class="topictitle"')) {
-        console.warn("LePorno response doesn't contain expected structure");
-        // Пробуем альтернативный запрос без некоторых параметров
-        const altUrl = `https://leporno.de/search.php?keywords=${encodedQuery}&terms=all&sr=topics&submit=%D0%9F%D0%BE%D0%B8%D1%81%D0%BA`;
-        lepornoHtml = await fetch(altUrl, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          }
-        }).then(r => r.text()).catch(() => "");
-      }
-    } catch (e) {
-      console.error(`LePorno request failed: ${e.message}`);
-      lepornoHtml = "";
-    }
-  })(),
-  
-  // TFile
-  (async () => {
-    tfileHtml = await fetch(`https://tfile.co/forum/tracker.php?nm=${encodedQuery}`, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Cookie": "bb_session=0"
-      }
-    }).then(r => r.text()).catch(() => "");
-  })()
-]);
-
+      // 1. ПЕРВИЧНЫЕ ЗАПРОСЫ
+      // ===================================================
+      const [rutorPages, nnmBuffer, xxxtorHtml, lepornoHtml] = await Promise.all([
+        Promise.all([1, 2, 4, 5, 10].map(cat =>
+          fetch(`https://rutor.info/search/0/0/0${cat}0/0/${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.text()).catch(() => "")
+        )),
+        fetch(`https://nnmclub.to/forum/tracker.php?nm=${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.arrayBuffer()).catch(() => null),
+        fetch(`https://xxxtor.com/b.php?search=${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.text()).catch(() => ""),
+        fetch(`https://leporno.de/search.php`, {
+          method: 'POST',
+          headers: { 
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Referer": "https://leporno.de/search.php"
+          },
+          body: new URLSearchParams({ 
+            'keywords': query, 'terms': 'all', 'sr': 'topics', 'sf': 'titleonly', 'submit': 'Search' 
+          }).toString()
+        }).then(r => r.text()).catch(() => "")
+      ]);
 
       // ===================================================
       // 2. ПАРСИНГ RUTOR (БЕЗ ИЗМЕНЕНИЙ)
@@ -241,133 +157,73 @@ await Promise.all([
         }
       }
 
-// ===================================================
-// 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕННЫЙ)
-// ===================================================
-if (lepornoHtml) {
-  const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
-  const lepItems = [];
-  let rm;
-  
-  while ((rm = rowRegex.exec(lepornoHtml)) !== null) {
-    const row = rm[1];
-    
-    // Извлекаем ID торрента и название
-    const topicMatch = row.match(/href=["']\.\/viewtopic\.php\?(?:[^"']*&)?t=(\d+)[^"']*["'][^>]*class=["']topictitle["'][^>]*>([^<]+)<\/a>/i);
-    if (!topicMatch) continue;
-    
-    const torrentId = topicMatch[1];
-    const title = topicMatch[2].trim();
-    
-    // Извлекаем ID файла для скачивания
-    const fileIdMatch = row.match(/href=["']\.\/download\/file\.php\?id=(\d+)["']/i);
-    const fileId = fileIdMatch ? fileIdMatch[1] : null;
-    
-    // Извлекаем размер (может быть в разных форматах) - ИСПРАВЛЕН СИНТАКСИС
-    const sizeMatch = row.match(/(?:Размер|Size):\s*<b>([\d.,]+)&nbsp;([TGMK]Б|[TGMK]B)/i);
-    let size = 0;
-    if (sizeMatch) {
-      size = parseSizeToBytes(sizeMatch[1], sizeMatch[2]);
-    }
-    
-    // Извлекаем сиды и личи - ИСПРАВЛЕН СИНТАКСИС
-    const seedsMatch = row.match(/<span class=["']my_tt seed["'][^>]*><b>(\d+)<\/b><\/span>/i);
-    const leechMatch = row.match(/<span class=["']my_tt leech["'][^>]*><b>(\d+)<\/b><\/span>/i);
-    
-    // Извлекаем здоровье (health) - ИСПРАВЛЕН СИНТАКСИС
-    const healthMatch = row.match(/(?:Здоровье|Health):\s*<b>(\d+)<\/b>/i);
-    
-    lepItems.push({
-      id: torrentId,
-      fileId: fileId,
-      title: title,
-      size: size,
-      seeds: seedsMatch ? parseInt(seedsMatch[1]) : 0,
-      leech: leechMatch ? parseInt(leechMatch[1]) : 0,
-      health: healthMatch ? parseInt(healthMatch[1]) : 0
-    });
-    
-    if (lepItems.length >= 15) break;
-  }
-  
-  // Обрабатываем каждый найденный торрент
-  await Promise.all(lepItems.map(async item => {
-    try {
-      if (!item.fileId) return;
-      
-      // Получаем хеш из торрент-файла
-      const torRes = await fetch(`https://leporno.de/download/file.php?id=${item.fileId}`);
-      const torBuf = await torRes.arrayBuffer();
-      const hash = await getInfoHash(torBuf);
-      
-      if (hash && !seen.has(hash)) {
-        seen.add(hash);
-        
-        // Дополнительно получаем детали со страницы торрента для уточнения данных
-        let detailedTitle = item.title;
-        let bitrate = null;
-        
-        try {
-          const pageRes = await fetch(`https://leporno.de/viewtopic.php?t=${item.id}`);
-          const pageHtml = await pageRes.text();
-          
-          // Ищем битрейт на странице (может быть в разных местах) - ИСПРАВЛЕН СИНТАКСИС
-          const bitrateMatch = pageHtml.match(/(\d+)\s*(kbps|kb\/s|mbps|кбит\/с)/i);
-          if (bitrateMatch) {
-            bitrate = bitrateMatch[0];
-            detailedTitle = `${item.title} [${bitrate}]`;
+      // ===================================================
+      // 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕНО: РАЗМЕР, БИТРЕЙТ, СИДЫ)
+      // ===================================================
+      if (lepornoHtml) {
+        const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
+        const lepItems = [];
+        let rm;
+        while ((rm = rowRegex.exec(lepornoHtml)) !== null) {
+          const row = rm[1];
+          const topicMatch = row.match(/href=["']\.\/viewtopic\.php\?(?:f=\d+&amp;)?t=(\d+)[^"']*["']\s+class=["']topictitle["'][^>]*>([\s\S]*?)<\/a>/i);
+          if (topicMatch) {
+            // Предварительный поиск размера и сидов в строке (если есть)
+            const sM = row.match(/>([\d.,]+)\s*(GB|MB|KB|ГБ|МБ|КБ)<\/td>/i);
+            const sdM = row.match(/class=["']my_tt\s+seed["'][^>]*><b>(\d+)<\/b>/i);
+            lepItems.push({ 
+                id: topicMatch[1], title: topicMatch[2].replace(/<[^>]+>/g, '').trim(),
+                size: sM ? parseSizeToBytes(sM[1], sM[2]) : 0,
+                seeds: sdM ? parseInt(sdM[1]) : 0
+            });
           }
-          
-          // Уточняем размер со страницы (если есть более точные данные) - ИСПРАВЛЕН СИНТАКСИС
-          const detailedSizeMatch = pageHtml.match(/(?:Размер|Size|Größe):\s*<b>([\d.,]+)&nbsp;([TGMK]Б|[TGMK]B)/i);
-          if (detailedSizeMatch) {
-            item.size = parseSizeToBytes(detailedSizeMatch[1], detailedSizeMatch[2]);
-          }
-          
-          // Уточняем сиды и личи со страницы - ИСПРАВЛЕН СИНТАКСИС
-          const detailedSeedsMatch = pageHtml.match(/<span class=["']my_tt seed["'][^>]*><b>(\d+)<\/b><\/span>/i);
-          const detailedLeechMatch = pageHtml.match(/<span class=["']my_tt leech["'][^>]*><b>(\d+)<\/b><\/span>/i);
-          
-          if (detailedSeedsMatch) item.seeds = parseInt(detailedSeedsMatch[1]);
-          if (detailedLeechMatch) item.leech = parseInt(detailedLeechMatch[1]);
-          
-        } catch (e) {
-          // Если не удалось получить детали, используем данные из поиска
-          console.error(`Error fetching details for ${item.id}:`, e.message);
+          if (lepItems.length >= 15) break;
         }
-        
-        // Разделяем название на русское и английское (если есть разделитель)
-        let titleRu = item.title;
-        let titleEn = "";
-        const titleParts = item.title.split(/[\/|]/);
-        if (titleParts.length > 1) {
-          titleRu = titleParts[0].trim();
-          titleEn = titleParts.slice(1).join(' ').trim();
-        }
-        
-        Results.push({
-          Title: detailedTitle,
-          TitleRu: titleRu,
-          TitleEn: titleEn,
-          Seeders: item.seeds,
-          Peers: item.leech,
-          Size: item.size,
-          Bitrate: bitrate,
-          Health: item.health,
-          Tracker: "LePorno.de",
-          MagnetUri: `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}`,
-          TorrentLink: `https://leporno.de/download/file.php?id=${item.fileId}`,
-          Link: `https://leporno.de/viewtopic.php?t=${item.id}`,
-          PublishDate: new Date().toISOString()
-        });
+
+        await Promise.all(lepItems.map(async item => {
+          try {
+            const res = await fetch(`https://leporno.de/viewtopic.php?t=${item.id}`);
+            const h = await res.text();
+            const fMatch = h.match(/download\/file\.php\?id=(\d+)/);
+            if (fMatch) {
+              const fId = fMatch[1];
+              // Скачиваем торрент для HASH (если нужно) или берем из магнета
+              const torRes = await fetch(`https://leporno.de/download/file.php?id=${fId}`);
+              const torBuf = await torRes.arrayBuffer();
+              const hash = await getInfoHash(torBuf);
+
+              if (hash && !seen.has(hash)) {
+                seen.add(hash);
+                // Уточняем данные со страницы топика
+                const szDetail = h.match(/(?:Размер|Size|Größe):\s*<b>([\d.,]+)\s*&nbsp;\s*(TB|GB|MB|KB|ТБ|ГБ|МБ|КБ)/i);
+                const sdDetail = h.match(/class=["']my_tt\s+seed["'][^>]*><b>(\d+)<\/b>/i);
+                const bitDetail = h.match(/(\d+)\s*(kbps|kb\/s|mbps)/i);
+
+                Results.push({
+                  Title: bitDetail ? `${item.title} [${bitDetail[0]}]` : item.title,
+                  Seeders: sdDetail ? parseInt(sdDetail[1]) : item.seeds,
+                  Peers: 0,
+                  Size: szDetail ? parseSizeToBytes(szDetail[1], szDetail[2]) : item.size,
+                  Tracker: "LePorno.de",
+                  MagnetUri: `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}`,
+                  Link: `https://leporno.de/viewtopic.php?t=${item.id}`,
+                  PublishDate: new Date().toISOString()
+                });
+              }
+            }
+          } catch (e) {}
+        }));
       }
-    } catch (e) {
-      console.error(`Error processing LePorno item ${item.id}:`, e.message);
-    }
-  }));
-}
+
+    } catch (e) { debug.error = e.message; }
+
+    Results.sort((a, b) => b.Seeders - a.Seeders);
+    return jsonResponse({ Results, Indexers: ["Rutor", "NNMClub", "XXXTor", "LePorno.de"], Total: Results.length });
+  }
+};
 
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+
 async function getInfoHash(buffer) {
   try {
     const uint8 = new Uint8Array(buffer);
@@ -413,11 +269,4 @@ function jsonResponse(data) {
   return new Response(JSON.stringify(data, null, 2), {
     headers: { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" }
   });
-}
-} catch (e) {
-      // обработка ошибок главного try
-    }
-    
-    return jsonResponse({ Results, Indexers: [], Message: "OK" });
-  }
 }
