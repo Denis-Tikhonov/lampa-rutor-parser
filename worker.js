@@ -116,7 +116,7 @@ export default {
         }
       }
       
-      // 5. LEPORNO.DE
+            // 5. LEPORNO.DE
       if (lepornoHtml && lepornoHtml.length > 100) {
         const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
         const lepItems = [];
@@ -168,6 +168,13 @@ export default {
               if (hash && !seen.has(hash)) {
                 seen.add(hash);
                 
+                // Очищаем название от проблемных символов
+                const cleanTitle = item.title
+                  .replace(/[$$$$]/g, '')
+                  .replace(/[\/\$$/g, '-')
+                  .replace(/\s+/g, ' ')
+                  .trim();
+                
                 const trackers = [
                   'udp://tracker.opentrackr.org:1337/announce',
                   'udp://open.stealth.si:80/announce',
@@ -175,8 +182,8 @@ export default {
                   'udp://tracker.openbittorrent.com:80/announce',
                   'udp://exodus.desync.com:6969/announce'
                 ];
-                const trParams = trackers.map(t => `tr=${encodeURIComponent(t)}`).join('&');
-                const magnetUri = `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}&${trParams}`;
+                const trParams = trackers.map(t => 'tr=' + encodeURIComponent(t)).join('&');
+                const magnetUri = 'magnet:?xt=urn:btih:' + hash + '&dn=' + encodeURIComponent(cleanTitle) + '&' + trParams;
                 
                 Results.push({
                   Title: item.title,
@@ -185,7 +192,7 @@ export default {
                   Size: item.size,
                   Tracker: "LePorno.de",
                   MagnetUri: magnetUri,
-                  Link: `https://leporno.de/viewtopic.php?f=${item.forumId}&t=${item.topicId}`,
+                  Link: 'https://leporno.de/viewtopic.php?f=' + item.forumId + '&t=' + item.topicId,
                   PublishDate: new Date().toISOString()
                 });
               }
@@ -193,13 +200,6 @@ export default {
           } catch (e) {}
         }));
       }
-      
-    } catch (e) {}
-    
-    Results.sort((a, b) => b.Seeders - a.Seeders);
-    return jsonResponse({ Results, Indexers: ["Rutor", "NNMClub", "XXXTor", "LePorno.de"], Total: Results.length });
-  }
-};
 
 async function getInfoHash(buffer) {
   try {
