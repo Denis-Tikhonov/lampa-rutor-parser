@@ -17,43 +17,23 @@ export default {
     const encodedQuery = encodeURIComponent(query);
     const Results = [];
     const seen = new Set();
-    const debug = { query, trackers: {} };
     
     try {
       // 1. ПЕРВИЧНЫЕ ЗАПРОСЫ
-      let lepornoHtml = "";
-      let lepornoError = null;
-      let lepornoStatus = 0;
-      
-      try {
-        const lepornoRes = await fetch(`https://leporno.de/search.php`, {
-          method: 'POST',
-          headers: { 
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", 
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
-          },
-          body: `keywords=${encodedQuery}&tracker_search=torrent&terms=all&sf=titleonly&sr=topics&submit=Search`
-        });
-        lepornoStatus = lepornoRes.status;
-        lepornoHtml = await lepornoRes.text();
-      } catch (e) {
-        lepornoError = e.message;
-      }
-      
-      debug.trackers.leporno = {
-        status: lepornoStatus,
-        error: lepornoError,
-        htmlLength: lepornoHtml.length
-      };
-      
-      const [rutorPages, nnmBuffer, xxxtorHtml] = await Promise.all([
+      const [rutorPages, nnmBuffer, xxxtorHtml, lepornoHtml] = await Promise.all([
         Promise.all([1, 2, 4, 5, 10].map(cat =>
           fetch(`https://rutor.info/search/0/0/0${cat}0/0/${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.text()).catch(() => "")
         )),
         fetch(`https://nnmclub.to/forum/tracker.php?nm=${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.arrayBuffer()).catch(() => null),
-        fetch(`https://xxxtor.com/b.php?search=${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.text()).catch(() => "")
+        fetch(`https://xxxtor.com/b.php?search=${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.text()).catch(() => ""),
+        fetch(`https://leporno.de/search.php`, {
+          method: 'POST',
+          headers: { 
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", 
+            "Content-Type": "application/x-www-form-urlencoded"
+          },
+          body: `keywords=${encodedQuery}&tracker_search=torrent&terms=all&sf=titleonly&sr=topics&submit=Search`
+        }).then(r => r.text()).catch(() => "")
       ]);
       
       // 2. RUTOR
@@ -171,15 +151,10 @@ export default {
           if (lepItems.length >= 15) break;
         }
         
-        debug.trackers.leporno.totalItems = lepItems.length;
-        
-        // Получаем hash из торрент-файла
-        let magnetSuccess = 0;
+        // Получаем hash из торрент-файлов
         await Promise.all(lepItems.map(async item => {
           try {
-            // Скачиваем торрент-файл
-            const torrentUrl = `https://leporno.de/download/file.php?id=${item.fileId}`;
-            const torrentRes = await fetch(torrentUrl, {
+            const torrentRes = await fetch(`https://leporno.de/download/file.php?id=${item.fileId}`, {
               headers: { 
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Referer": "https://leporno.de/"
@@ -188,26 +163,12 @@ export default {
             
             const contentType = torrentRes.headers.get('Content-Type') || '';
             
-            // Проверяем, что это торрент-файл
             if (torrentRes.status === 200 && (contentType.includes('torrent') || contentType.includes('octet-stream'))) {
               const torrentBuffer = await torrentRes.arrayBuffer();
               const hash = await getInfoHash(torrentBuffer);
               
-              if (!debug.trackers.leporno.torrentDebug) {
-                debug.trackers.leporno.torrentDebug = {
-                  fileId: item.fileId,
-                  status: torrentRes.status,
-                  contentType: contentType,
-                  bufferSize: torrentBuffer.byteLength,
-                  hash: hash ? hash.substring(0, 20) + '...' : 'NULL'
-                };
-              }
-              
               if (hash && !seen.has(hash)) {
                 seen.add(hash);
-                magnetSuccess++;
-                
-                // Формируем magnet-ссылку с трекерами
                 const magnetUri = `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}&tr=udp://tracker.opentrackr.org:1337/announce&tr=udp://open.stealth.si:80/announce&tr=udp://tracker.torrent.eu.org:451/announce`;
                 
                 Results.push({
@@ -221,36 +182,18 @@ export default {
                   PublishDate: new Date().toISOString()
                 });
               }
-            } else {
-              if (!debug.trackers.leporno.torrentDebug) {
-                debug.trackers.leporno.torrentDebug = {
-                  fileId: item.fileId,
-                  status: torrentRes.status,
-                  contentType: contentType,
-                  error: 'Not a torrent file'
-                };
-              }
             }
-          } catch (e) {
-            if (!debug.trackers.leporno.torrentError) {
-              debug.trackers.leporno.torrentError = e.message;
-            }
-          }
+          } catch (e) {}
         }));
-        
-        debug.trackers.leporno.magnetSuccess = magnetSuccess;
       }
       
-    } catch (e) { 
-      debug.error = e.message; 
-    }
+    } catch (e) {}
     
     Results.sort((a, b) => b.Seeders - a.Seeders);
-    return jsonResponse({ Results, Indexers: ["Rutor", "NNMClub", "XXXTor", "LePorno.de"], Total: Results.length, Debug: debug });
+    return jsonResponse({ Results, Indexers: ["Rutor", "NNMClub", "XXXTor", "LePorno.de"], Total: Results.length });
   }
 };
 
-// Функция извлечения info_hash из торрент-файла
 async function getInfoHash(buffer) {
   try {
     const uint8 = new Uint8Array(buffer);
