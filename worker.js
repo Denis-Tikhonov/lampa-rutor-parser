@@ -1,7 +1,6 @@
 export default {
   async fetch(request) {
     const url = new URL(request.url);
-
     // ===================================================
     // CORS & OPTIONS
     // ===================================================
@@ -14,19 +13,15 @@ export default {
         }
       });
     }
-
     const query = url.searchParams.get("Query") || url.searchParams.get("query");
     if (!query) {
       return jsonResponse({ Results: [], Indexers: [], Message: "Введите запрос через ?Query=" });
     }
-
     const encodedQuery = encodeURIComponent(query);
     const queryTokens = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-    
     const Results = [];
     const seen = new Set();
     const debug = { query, trackers: {} };
-
     try {
       // ===================================================
       // 1. ПЕРВИЧНЫЕ ЗАПРОСЫ
@@ -44,7 +39,6 @@ export default {
           }
         }).then(r => r.text()).catch(() => "")
       ]);
-
       // ===================================================
       // 2. ПАРСИНГ RUTOR (БЕЗ ИЗМЕНЕНИЙ)
       // ===================================================
@@ -70,7 +64,6 @@ export default {
           });
         }
       }
-
       // ===================================================
       // 3. ПАРСИНГ NNMCLUB (ИСПРАВЛЕНО)
       // ===================================================
@@ -78,42 +71,29 @@ export default {
         const h = new TextDecoder("windows-1251").decode(nnmBuffer);
         const rows = h.match(/<tr class="p?row[12]">([\s\S]*?)<\/tr>/g) || [];
         const nnmItems = [];
-
         for (const r of rows) {
-          // Парсим ID и Название
           const t = r.match(/href="viewtopic\.php\?t=(\d+)"[^>]*><b>([^<]+)<\/b>/);
           if (t) {
             const id = t[1];
             const title = t[2].trim();
-
-            // Извлекаем точный размер в байтах из тега <u>
             const sizeMatch = r.match(/<u>(\d+)<\/u>/);
             const size = sizeMatch ? parseInt(sizeMatch[1]) : 0;
-
-            // Извлекаем сидов (Seeders)
             const seedsMatch = r.match(/class="seedmed"><b>(\d+)<\/b>/);
             const seeds = seedsMatch ? parseInt(seedsMatch[1]) : 0;
-
-            // Извлекаем пиров (Leechers)
             const peersMatch = r.match(/class="leechmed"><b>(\d+)<\/b>/);
             const peers = peersMatch ? parseInt(peersMatch[1]) : 0;
-
             nnmItems.push({ id, title, size, seeds, peers });
           }
         }
-
-        // Выполняем дозапрос только для получения Magnet-ссылок
         await Promise.all(nnmItems.slice(0, 15).map(async it => {
           try {
             const res = await fetch(`https://nnmclub.to/forum/viewtopic.php?t=${it.id}`).then(r => r.arrayBuffer());
             const th = new TextDecoder("windows-1251").decode(res);
             const magnet = th.match(/href="(magnet:\?xt=urn:btih:([a-fA-F0-9]{40})[^"]*)"/i);
-
             if (magnet) {
               const hash = magnet[2].toLowerCase();
               if (!seen.has(hash)) {
                 seen.add(hash);
-                
                 Results.push({
                   Title: it.title,
                   Seeders: it.seeds,
@@ -129,7 +109,6 @@ export default {
           } catch (e) {}
         }));
       }
-     
       // ===================================================
       // 4. ПАРСИНГ XXXTOR (БЕЗ ИЗМЕНЕНИЙ)
       // ===================================================
@@ -151,8 +130,7 @@ export default {
           });
         }
       }
-
-           // ===================================================
+      // ===================================================
       // 5. ПАРСИНГ LEPORNO.DE (ПОЛНОСТЬЮ ПЕРЕРАБОТАН)
       // ===================================================
       if (lepornoHtml) {
@@ -163,32 +141,26 @@ export default {
         while ((rm = rowRegex.exec(lepornoHtml)) !== null) {
           const row = rm[1];
           
-          // Извлекаем ID файла для скачивания торрента/магнета
           const fileIdMatch = row.match(/download\/file\.php\?id=(\d+)/);
           if (!fileIdMatch) continue;
           
           const fileId = fileIdMatch[1];
           
-          // Извлекаем название из topictitle
           const titleMatch = row.match(/class=["']topictitle["'][^>]*>([^<]+)<\/a>/i);
           if (!titleMatch) continue;
           
           const title = titleMatch[1].trim();
           
-          // Извлекаем Topic ID для ссылки на страницу
           const topicMatch = row.match(/viewtopic\.php\?f=(\d+)&amp;t=(\d+)/);
           const topicId = topicMatch ? topicMatch[2] : fileId;
           const forumId = topicMatch ? topicMatch[1] : '0';
           
-          // Извлекаем размер: "Размер: <b>317.68&nbsp;МБ</b>"
           const sizeMatch = row.match(/Размер:\s*<b>([\d.,]+)&nbsp;(ТБ|ГБ|МБ|КБ|TB|GB|MB|KB)<\/b>/i);
           const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
           
-          // Извлекаем сиды: <span class="my_tt seed"><b>40</b></span>
           const seedMatch = row.match(/class=["']my_tt\s+seed["'][^>]*><b>(\d+)<\/b>/i);
           const seeds = seedMatch ? parseInt(seedMatch[1]) : 0;
           
-          // Извлекаем личи: <span class="my_tt leech"><b>8</b></span>
           const leechMatch = row.match(/class=["']my_tt\s+leech["'][^>]*><b>(\d+)<\/b>/i);
           const leechers = leechMatch ? parseInt(leechMatch[1]) : 0;
           
@@ -197,7 +169,6 @@ export default {
           if (lepItems.length >= 15) break;
         }
         
-        // Параллельно получаем magnet-ссылки через редирект
         await Promise.all(lepItems.map(async item => {
           try {
             const magnetUrl = `https://leporno.de/download/file.php?id=${item.fileId}&magnet=1&confirm=1`;
@@ -206,16 +177,14 @@ export default {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Referer": "https://leporno.de/"
               },
-              redirect: 'manual'  // Не следовать редиректу, получить Location
+              redirect: 'manual'
             });
             
-            // Magnet-ссылка в заголовке Location
             const location = magnetRes.headers.get('Location');
             
             if (location && location.startsWith('magnet:')) {
-              const magnetUri = decodeURIComponent(location);
+              const magnetUri = location;
               
-              // Извлекаем hash из magnet
               const hashMatch = magnetUri.match(/btih:([a-fA-F0-9]{40})/i);
               const hash = hashMatch ? hashMatch[1].toLowerCase() : null;
               
@@ -236,10 +205,12 @@ export default {
           } catch (e) {}
         }));
       }
-
-
+    } catch (e) { debug.error = e.message; }
+    Results.sort((a, b) => b.Seeders - a.Seeders);
+    return jsonResponse({ Results, Indexers: ["Rutor", "NNMClub", "XXXTor", "LePorno.de"], Total: Results.length });
+  }
+};
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-
 async function getInfoHash(buffer) {
   try {
     const uint8 = new Uint8Array(buffer);
@@ -272,7 +243,6 @@ async function getInfoHash(buffer) {
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   } catch (e) { return null; }
 }
-
 function parseSizeToBytes(num, unit) {
   if (!num) return 0;
   const n = parseFloat(num.replace(",", "."));
@@ -280,7 +250,6 @@ function parseSizeToBytes(num, unit) {
   const map = { 'TB': 1024**4, 'ТБ': 1024**4, 'GB': 1024**3, 'ГБ': 1024**3, 'MB': 1024**2, 'МБ': 1024**2, 'KB': 1024, 'КБ': 1024 };
   return Math.round(n * (map[u] || 1));
 }
-
 function jsonResponse(data) {
   return new Response(JSON.stringify(data, null, 2), {
     headers: { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" }
