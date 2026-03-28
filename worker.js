@@ -17,6 +17,7 @@ export default {
     const encodedQuery = encodeURIComponent(query);
     const Results = [];
     const seen = new Set();
+    const debug = { query, trackers: {} };
     try {
       const [rutorPages, nnmBuffer, xxxtorHtml, lepornoHtml] = await Promise.all([
         Promise.all([1, 2, 4, 5, 10].map(cat =>
@@ -28,7 +29,6 @@ export default {
           headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer": "https://leporno.de/" }
         }).then(r => r.text()).catch(() => "")
       ]);
-      // 2. RUTOR
       for (const html of rutorPages) {
         const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
         let m;
@@ -51,7 +51,6 @@ export default {
           });
         }
       }
-      // 3. NNMCLUB
       if (nnmBuffer) {
         const h = new TextDecoder("windows-1251").decode(nnmBuffer);
         const rows = h.match(/<tr class="p?row[12]">([\s\S]*?)<\/tr>/g) || [];
@@ -59,7 +58,8 @@ export default {
         for (const r of rows) {
           const t = r.match(/href="viewtopic\.php\?t=(\d+)"[^>]*><b>([^<]+)<\/b>/);
           if (t) {
-            const id = t[1], title = t[2].trim();
+            const id = t[1];
+            const title = t[2].trim();
             const sizeMatch = r.match(/<u>(\d+)<\/u>/);
             const size = sizeMatch ? parseInt(sizeMatch[1]) : 0;
             const seedsMatch = r.match(/class="seedmed"><b>(\d+)<\/b>/);
@@ -88,7 +88,6 @@ export default {
           } catch (e) {}
         }));
       }
-      // 4. XXXTOR
       const xtRows = xxxtorHtml.match(/<tr\s+class=["']gai["'][^>]*>([\s\S]*?)<\/tr>/gi) || [];
       for (const r of xtRows) {
         const t = r.match(/<a\s+href=["']\/torrent\/(\d+)\/["'][^>]*>([^<]+)<\/a>/i);
@@ -106,8 +105,8 @@ export default {
           });
         }
       }
-      // 5. LEPORNO.DE
       if (lepornoHtml) {
+        debug.trackers.leporno = { htmlLength: lepornoHtml.length, items: [], errors: [] };
         const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
         const lepItems = [];
         let rm;
@@ -122,15 +121,24 @@ export default {
           const topicMatch = row.match(/viewtopic\.php\?f=(\d+)&amp;t=(\d+)/);
           const topicId = topicMatch ? topicMatch[2] : fileId;
           const forumId = topicMatch ? topicMatch[1] : '0';
-          const sizeMatch = row.match(/Размер:\s*<b>([\d.,]+)&nbsp;(ТБ|ГБ|МБ|КБ|TB|GB|MB|KB)<\/b>/i);
+          const sizeMatch = row.match(/Размер:\s*<b>([\d.,]+)&nbsp;(ТБ|ГБ|МБ|КБ|TB|GB|MB|KB)<\/b>/i)
+                         || row.match(/Размер:\s*<b>([\d.,]+)\s*(ТБ|ГБ|МБ|КБ|TB|GB|MB|KB)<\/b>/i)
+                         || row.match(/([\d.,]+)&nbsp;(ТБ|ГБ|МБ|КБ|TB|GB|MB|KB)<\/b>/i);
           const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
-          const seedMatch = row.match(/class=["']my_tt seed["'][^>]*><b>(\d+)<\/b>/i);
+          const seedMatch = row.match(/class=["']my_tt\s+seed["'][^>]*><b>(\d+)<\/b>/i)
+                         || row.match(/seed["'][^>]*><b>(\d+)<\/b>/i);
           const seeds = seedMatch ? parseInt(seedMatch[1]) : 0;
-          const leechMatch = row.match(/class=["']my_tt leech["'][^>]*><b>(\d+)<\/b>/i);
+          const leechMatch = row.match(/class=["']my_tt\s+leech["'][^>]*><b>(\d+)<\/b>/i)
+                          || row.match(/leech["'][^>]*><b>(\d+)<\/b>/i);
           const leechers = leechMatch ? parseInt(leechMatch[1]) : 0;
+          debug.trackers.leporno.items.push({
+            fileId, title: title.substring(0, 50), size, seeds, leechers,
+            sizeRaw: sizeMatch ? sizeMatch[0] : 'NOT_FOUND', seedRaw: seedMatch ? seedMatch[0] : 'NOT_FOUND'
+          });
           lepItems.push({ fileId, title, topicId, forumId, size, seeds, leechers });
           if (lepItems.length >= 15) break;
         }
+        debug.trackers.leporno.foundItems = lepItems.length;
         await Promise.all(lepItems.map(async item => {
           try {
             const magnetUrl = `https://leporno.de/download/file.php?id=${item.fileId}&magnet=1&confirm=1`;
@@ -139,6 +147,8 @@ export default {
               redirect: 'manual'
             });
             const location = magnetRes.headers.get('Location');
+            const status = magnetRes.status;
+            debug.trackers.leporno.magnetTest = { fileId: item.fileId, status, hasLocation: !!location, locationStart: location ? location.substring(0, 100) : 'NULL' };
             if (location && location.startsWith('magnet:')) {
               const magnetUri = location;
               const hashMatch = magnetUri.match(/btih:([a-fA-F0-9]{40})/i);
@@ -148,17 +158,33 @@ export default {
                 Results.push({
                   Title: item.title, Seeders: item.seeds, Peers: item.leechers, Size: item.size,
                   Tracker: "LePorno.de", MagnetUri: magnetUri,
-                  Link: `https://leporno.de/viewtopic.php?f=${item.forumId}&t=${item.topicId}`,
-                  PublishDate: new Date().toISOString()
+                  Link: `https://leporno.de/viewtopic.php?f=${item.forumId}&t=${item.topicId}`, PublishDate: new Date().toISOString()
                 });
               }
+            } else {
+              const body = await magnetRes.text();
+              debug.trackers.leporno.bodySnippet = body.substring(0, 500);
+              const magnetInBody = body.match(/(magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^"'\s<]*)/i);
+              if (magnetInBody) {
+                const magnetUri = magnetInBody[1];
+                const hashMatch = magnetUri.match(/btih:([a-fA-F0-9]{40})/i);
+                const hash = hashMatch ? hashMatch[1].toLowerCase() : null;
+                if (hash && !seen.has(hash)) {
+                  seen.add(hash);
+                  Results.push({
+                    Title: item.title, Seeders: item.seeds, Peers: item.leechers, Size: item.size,
+                    Tracker: "LePorno.de", MagnetUri: magnetUri,
+                    Link: `https://leporno.de/viewtopic.php?f=${item.forumId}&t=${item.topicId}`, PublishDate: new Date().toISOString()
+                  });
+                }
+              }
             }
-          } catch (e) {}
+          } catch (e) { debug.trackers.leporno.errors.push(e.message); }
         }));
       }
-    } catch (e) {}
+    } catch (e) { debug.error = e.message; }
     Results.sort((a, b) => b.Seeders - a.Seeders);
-    return jsonResponse({ Results, Indexers: ["Rutor", "NNMClub", "XXXTor", "LePorno.de"], Total: Results.length });
+    return jsonResponse({ Results, Indexers: ["Rutor", "NNMClub", "XXXTor", "LePorno.de"], Total: Results.length, Debug: debug });
   }
 };
 async function getInfoHash(buffer) {
@@ -170,7 +196,8 @@ async function getInfoHash(buffer) {
     const infoIndex = data.indexOf(infoKey);
     if (infoIndex === -1) return null;
     const infoStart = infoIndex + infoKey.length;
-    let pos = infoStart, depth = 0;
+    let pos = infoStart;
+    let depth = 0;
     if (data[pos] !== 'd') return null;
     while (pos < data.length) {
       const char = data[pos];
