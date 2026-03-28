@@ -28,27 +28,111 @@ export default {
     const debug = { query, trackers: {} };
 
     try {
+      
       // ===================================================
-      // 1. ПЕРВИЧНЫЕ ЗАПРОСЫ
-      // ===================================================
-      const [rutorPages, nnmBuffer, xxxtorHtml, lepornoHtml] = await Promise.all([
-        Promise.all([1, 2, 4, 5, 10].map(cat =>
-          fetch(`https://rutor.info/search/0/0/0${cat}0/0/${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.text()).catch(() => "")
-        )),
-        fetch(`https://nnmclub.to/forum/tracker.php?nm=${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.arrayBuffer()).catch(() => null),
-        fetch(`https://xxxtor.com/b.php?search=${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.text()).catch(() => ""),
-        fetch(`https://leporno.de/search.php`, {
-          method: 'POST',
-          headers: { 
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Referer": "https://leporno.de/search.php"
-          },
-          body: new URLSearchParams({ 
-            'keywords': query, 'terms': 'all', 'sr': 'topics', 'sf': 'titleonly', 'submit': 'Search' 
-          }).toString()
-        }).then(r => r.text()).catch(() => "")
-      ]);
+// 1. ПЕРВИЧНЫЕ ЗАПРОСЫ (ИСПРАВЛЕННЫЙ)
+// ===================================================
+const encodedQuery = encodeURIComponent(query);
+let pirateHtml = "";
+let rutrackerHtml = "";
+let nnmHtml = "";
+let lepornoHtml = "";
+let tfileHtml = "";
+
+// Запросы выполняются параллельно
+await Promise.all([
+  // PirateBay
+  (async () => {
+    pirateHtml = await fetch(`https://apibay.org/q.php?q=${encodedQuery}&cat=0`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      }
+    }).then(r => r.text()).catch(() => "");
+  })(),
+  
+  // Rutracker
+  (async () => {
+    rutrackerHtml = await fetch(`https://rutracker.org/forum/tracker.php?nm=${encodedQuery}`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Cookie": "bb_session=0"
+      }
+    }).then(r => r.text()).catch(() => "");
+  })(),
+  
+  // NNM-Club
+  (async () => {
+    nnmHtml = await fetch(`https://nnmclub.to/forum/tracker.php?nm=${encodedQuery}`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Cookie": "bb_session=0"
+      }
+    }).then(r => r.text()).catch(() => "");
+  })(),
+  
+  // LePorno.de (ИСПРАВЛЕННЫЙ ЗАПРОС)
+  (async () => {
+    try {
+      // Используем параметры поиска как на реальном сайте
+      const searchUrl = `https://leporno.de/search.php?tracker_search=torrent&keywords=${encodedQuery}&terms=all&author=&sc=1&sf=titleonly&sk=t&sd=d&sr=topics&st=0&ch=300&t=0&submit=%D0%9F%D0%BE%D0%B8%D1%81%D0%BA`;
+      
+      lepornoHtml = await fetch(searchUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+          "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+          "Accept-Encoding": "gzip, deflate, br",
+          "Referer": "https://leporno.de/search.php",
+          "Connection": "keep-alive",
+          "Upgrade-Insecure-Requests": "1",
+          "Sec-Fetch-Dest": "document",
+          "Sec-Fetch-Mode": "navigate",
+          "Sec-Fetch-Site": "same-origin",
+          "Cache-Control": "max-age=0"
+        },
+        // Добавляем таймаут и обработку редиректов
+        timeout: 10000,
+        redirect: "follow"
+      }).then(async r => {
+        if (r.ok) {
+          return await r.text();
+        } else {
+          console.error(`LePorno request failed: ${r.status} ${r.statusText}`);
+          return "";
+        }
+      }).catch(e => {
+        console.error(`LePorno fetch error: ${e.message}`);
+        return "";
+      });
+      
+      // Проверяем, что получили HTML с результатами
+      if (lepornoHtml && !lepornoHtml.includes('class="topictitle"')) {
+        console.warn("LePorno response doesn't contain expected structure");
+        // Пробуем альтернативный запрос без некоторых параметров
+        const altUrl = `https://leporno.de/search.php?keywords=${encodedQuery}&terms=all&sr=topics&submit=%D0%9F%D0%BE%D0%B8%D1%81%D0%BA`;
+        lepornoHtml = await fetch(altUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          }
+        }).then(r => r.text()).catch(() => "");
+      }
+    } catch (e) {
+      console.error(`LePorno request failed: ${e.message}`);
+      lepornoHtml = "";
+    }
+  })(),
+  
+  // TFile
+  (async () => {
+    tfileHtml = await fetch(`https://tfile.co/forum/tracker.php?nm=${encodedQuery}`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Cookie": "bb_session=0"
+      }
+    }).then(r => r.text()).catch(() => "");
+  })()
+]);
+
 
       // ===================================================
       // 2. ПАРСИНГ RUTOR (БЕЗ ИЗМЕНЕНИЙ)
