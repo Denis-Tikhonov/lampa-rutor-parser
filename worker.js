@@ -18,17 +18,48 @@ export default {
     const Results = [];
     const seen = new Set();
     const debug = { query, trackers: {} };
+    
     try {
-      const [rutorPages, nnmBuffer, xxxtorHtml, lepornoHtml] = await Promise.all([
+      // 1. ПЕРВИЧНЫЕ ЗАПРОСЫ
+      let lepornoHtml = "";
+      let lepornoError = null;
+      let lepornoStatus = 0;
+      
+      try {
+        const lepornoRes = await fetch(`https://leporno.de/search.php?tracker_search=torrent&keywords=${encodedQuery}&terms=all&sc=1&sf=titleonly&sk=t&sd=d&sr=topics&st=0&ch=300&t=0&submit=Поиск`, {
+          headers: { 
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", 
+            "Referer": "https://leporno.de/",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8"
+          }
+        });
+        lepornoStatus = lepornoRes.status;
+        lepornoHtml = await lepornoRes.text();
+      } catch (e) {
+        lepornoError = e.message;
+      }
+      
+      // Отладка LePorno
+      debug.trackers.leporno = {
+        status: lepornoStatus,
+        error: lepornoError,
+        htmlLength: lepornoHtml.length,
+        htmlStart: lepornoHtml.substring(0, 500),
+        containsMiddle: lepornoHtml.includes('valign="middle"'),
+        containsTopictitle: lepornoHtml.includes('topictitle'),
+        containsDownload: lepornoHtml.includes('download/file.php')
+      };
+      
+      const [rutorPages, nnmBuffer, xxxtorHtml] = await Promise.all([
         Promise.all([1, 2, 4, 5, 10].map(cat =>
           fetch(`https://rutor.info/search/0/0/0${cat}0/0/${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.text()).catch(() => "")
         )),
         fetch(`https://nnmclub.to/forum/tracker.php?nm=${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.arrayBuffer()).catch(() => null),
-        fetch(`https://xxxtor.com/b.php?search=${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.text()).catch(() => ""),
-        fetch(`https://leporno.de/search.php?tracker_search=torrent&keywords=${encodedQuery}&terms=all&sc=1&sf=titleonly&sk=t&sd=d&sr=topics&st=0&ch=300&t=0&submit=Поиск`, {
-          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer": "https://leporno.de/" }
-        }).then(r => r.text()).catch(() => "")
+        fetch(`https://xxxtor.com/b.php?search=${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.text()).catch(() => "")
       ]);
+      
+      // 2. RUTOR
       for (const html of rutorPages) {
         const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
         let m;
@@ -51,6 +82,8 @@ export default {
           });
         }
       }
+      
+      // 3. NNMCLUB
       if (nnmBuffer) {
         const h = new TextDecoder("windows-1251").decode(nnmBuffer);
         const rows = h.match(/<tr class="p?row[12]">([\s\S]*?)<\/tr>/g) || [];
@@ -58,8 +91,7 @@ export default {
         for (const r of rows) {
           const t = r.match(/href="viewtopic\.php\?t=(\d+)"[^>]*><b>([^<]+)<\/b>/);
           if (t) {
-            const id = t[1];
-            const title = t[2].trim();
+            const id = t[1], title = t[2].trim();
             const sizeMatch = r.match(/<u>(\d+)<\/u>/);
             const size = sizeMatch ? parseInt(sizeMatch[1]) : 0;
             const seedsMatch = r.match(/class="seedmed"><b>(\d+)<\/b>/);
@@ -88,6 +120,8 @@ export default {
           } catch (e) {}
         }));
       }
+      
+      // 4. XXXTOR
       const xtRows = xxxtorHtml.match(/<tr\s+class=["']gai["'][^>]*>([\s\S]*?)<\/tr>/gi) || [];
       for (const r of xtRows) {
         const t = r.match(/<a\s+href=["']\/torrent\/(\d+)\/["'][^>]*>([^<]+)<\/a>/i);
@@ -105,114 +139,114 @@ export default {
           });
         }
       }
-      if (lepornoHtml) {
-        debug.trackers.leporno = { htmlLength: lepornoHtml.length, items: [], errors: [] };
+      
+      // 5. LEPORNO.DE
+      if (lepornoHtml && lepornoHtml.length > 100) {
         const rowRegex = /<tr\s+valign=["']middle["'][^>]*>([\s\S]*?)<\/tr>/gi;
         const lepItems = [];
         let rm;
+        
+        debug.trackers.leporno.parsing = { rowsFound: 0, itemsParsed: 0 };
+        
         while ((rm = rowRegex.exec(lepornoHtml)) !== null) {
+          debug.trackers.leporno.parsing.rowsFound++;
           const row = rm[1];
+          
           const fileIdMatch = row.match(/download\/file\.php\?id=(\d+)/);
           if (!fileIdMatch) continue;
           const fileId = fileIdMatch[1];
+          
           const titleMatch = row.match(/class=["']topictitle["'][^>]*>([^<]+)<\/a>/i);
           if (!titleMatch) continue;
           const title = titleMatch[1].trim();
+          
           const topicMatch = row.match(/viewtopic\.php\?f=(\d+)&amp;t=(\d+)/);
           const topicId = topicMatch ? topicMatch[2] : fileId;
           const forumId = topicMatch ? topicMatch[1] : '0';
-          const sizeMatch = row.match(/Размер:\s*<b>([\d.,]+)&nbsp;(ТБ|ГБ|МБ|КБ|TB|GB|MB|KB)<\/b>/i)
-                         || row.match(/Размер:\s*<b>([\d.,]+)\s*(ТБ|ГБ|МБ|КБ|TB|GB|MB|KB)<\/b>/i)
-                         || row.match(/([\d.,]+)&nbsp;(ТБ|ГБ|МБ|КБ|TB|GB|MB|KB)<\/b>/i);
+          
+          const sizeMatch = row.match(/Размер:\s*<b>([\d.,]+)&nbsp;(ТБ|ГБ|МБ|КБ|TB|GB|MB|KB)<\/b>/i);
           const size = sizeMatch ? parseSizeToBytes(sizeMatch[1], sizeMatch[2]) : 0;
-          const seedMatch = row.match(/class=["']my_tt\s+seed["'][^>]*><b>(\d+)<\/b>/i)
-                         || row.match(/seed["'][^>]*><b>(\d+)<\/b>/i);
+          
+          const seedMatch = row.match(/class=["']my_tt seed["'][^>]*><b>(\d+)<\/b>/i);
           const seeds = seedMatch ? parseInt(seedMatch[1]) : 0;
-          const leechMatch = row.match(/class=["']my_tt\s+leech["'][^>]*><b>(\d+)<\/b>/i)
-                          || row.match(/leech["'][^>]*><b>(\d+)<\/b>/i);
+          
+          const leechMatch = row.match(/class=["']my_tt leech["'][^>]*><b>(\d+)<\/b>/i);
           const leechers = leechMatch ? parseInt(leechMatch[1]) : 0;
-          debug.trackers.leporno.items.push({
-            fileId, title: title.substring(0, 50), size, seeds, leechers,
-            sizeRaw: sizeMatch ? sizeMatch[0] : 'NOT_FOUND', seedRaw: seedMatch ? seedMatch[0] : 'NOT_FOUND'
-          });
+          
+          debug.trackers.leporno.parsing.itemsParsed++;
+          
+          // Сохраняем первый элемент для отладки
+          if (lepItems.length === 0) {
+            debug.trackers.leporno.firstItem = { fileId, title: title.substring(0, 50), size, seeds, leechers };
+          }
+          
           lepItems.push({ fileId, title, topicId, forumId, size, seeds, leechers });
           if (lepItems.length >= 15) break;
         }
-        debug.trackers.leporno.foundItems = lepItems.length;
+        
+        debug.trackers.leporno.totalItems = lepItems.length;
+        
+        // Получаем magnet-ссылки
+        let magnetSuccess = 0;
         await Promise.all(lepItems.map(async item => {
           try {
             const magnetUrl = `https://leporno.de/download/file.php?id=${item.fileId}&magnet=1&confirm=1`;
             const magnetRes = await fetch(magnetUrl, {
-              headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer": "https://leporno.de/" },
+              headers: { 
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://leporno.de/"
+              },
               redirect: 'manual'
             });
+            
             const location = magnetRes.headers.get('Location');
             const status = magnetRes.status;
-            debug.trackers.leporno.magnetTest = { fileId: item.fileId, status, hasLocation: !!location, locationStart: location ? location.substring(0, 100) : 'NULL' };
+            
+            // Отладка первого магнета
+            if (!debug.trackers.leporno.magnetDebug) {
+              debug.trackers.leporno.magnetDebug = {
+                fileId: item.fileId,
+                status: status,
+                hasLocation: !!location,
+                locationStart: location ? location.substring(0, 80) : 'NULL'
+              };
+            }
+            
             if (location && location.startsWith('magnet:')) {
               const magnetUri = location;
               const hashMatch = magnetUri.match(/btih:([a-fA-F0-9]{40})/i);
               const hash = hashMatch ? hashMatch[1].toLowerCase() : null;
+              
               if (hash && !seen.has(hash)) {
                 seen.add(hash);
+                magnetSuccess++;
                 Results.push({
                   Title: item.title, Seeders: item.seeds, Peers: item.leechers, Size: item.size,
                   Tracker: "LePorno.de", MagnetUri: magnetUri,
-                  Link: `https://leporno.de/viewtopic.php?f=${item.forumId}&t=${item.topicId}`, PublishDate: new Date().toISOString()
+                  Link: `https://leporno.de/viewtopic.php?f=${item.forumId}&t=${item.topicId}`,
+                  PublishDate: new Date().toISOString()
                 });
               }
-            } else {
-              const body = await magnetRes.text();
-              debug.trackers.leporno.bodySnippet = body.substring(0, 500);
-              const magnetInBody = body.match(/(magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^"'\s<]*)/i);
-              if (magnetInBody) {
-                const magnetUri = magnetInBody[1];
-                const hashMatch = magnetUri.match(/btih:([a-fA-F0-9]{40})/i);
-                const hash = hashMatch ? hashMatch[1].toLowerCase() : null;
-                if (hash && !seen.has(hash)) {
-                  seen.add(hash);
-                  Results.push({
-                    Title: item.title, Seeders: item.seeds, Peers: item.leechers, Size: item.size,
-                    Tracker: "LePorno.de", MagnetUri: magnetUri,
-                    Link: `https://leporno.de/viewtopic.php?f=${item.forumId}&t=${item.topicId}`, PublishDate: new Date().toISOString()
-                  });
-                }
-              }
             }
-          } catch (e) { debug.trackers.leporno.errors.push(e.message); }
+          } catch (e) {
+            if (!debug.trackers.leporno.magnetError) {
+              debug.trackers.leporno.magnetError = e.message;
+            }
+          }
         }));
+        
+        debug.trackers.leporno.magnetSuccess = magnetSuccess;
       }
-    } catch (e) { debug.error = e.message; }
+      
+    } catch (e) { 
+      debug.error = e.message; 
+    }
+    
     Results.sort((a, b) => b.Seeders - a.Seeders);
     return jsonResponse({ Results, Indexers: ["Rutor", "NNMClub", "XXXTor", "LePorno.de"], Total: Results.length, Debug: debug });
   }
 };
-async function getInfoHash(buffer) {
-  try {
-    const uint8 = new Uint8Array(buffer);
-    const decoder = new TextDecoder('latin1');
-    const data = decoder.decode(uint8);
-    const infoKey = "4:info";
-    const infoIndex = data.indexOf(infoKey);
-    if (infoIndex === -1) return null;
-    const infoStart = infoIndex + infoKey.length;
-    let pos = infoStart;
-    let depth = 0;
-    if (data[pos] !== 'd') return null;
-    while (pos < data.length) {
-      const char = data[pos];
-      if (char === 'd' || char === 'l') depth++;
-      else if (char === 'e') { depth--; if (depth === 0) break; }
-      else if (!isNaN(parseInt(char))) { const colonIndex = data.indexOf(':', pos); const len = parseInt(data.substring(pos, colonIndex)); pos = colonIndex + len; }
-      pos++;
-    }
-    const infoEnd = pos + 1;
-    const infoBytes = uint8.slice(infoStart, infoEnd);
-    const hashBuffer = await crypto.subtle.digest('SHA-1', infoBytes);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-  } catch (e) { return null; }
-}
+
 function parseSizeToBytes(num, unit) {
   if (!num) return 0;
   const n = parseFloat(num.replace(",", "."));
@@ -220,6 +254,7 @@ function parseSizeToBytes(num, unit) {
   const map = { 'TB': 1024**4, 'ТБ': 1024**4, 'GB': 1024**3, 'ГБ': 1024**3, 'MB': 1024**2, 'МБ': 1024**2, 'KB': 1024, 'КБ': 1024 };
   return Math.round(n * (map[u] || 1));
 }
+
 function jsonResponse(data) {
   return new Response(JSON.stringify(data, null, 2), {
     headers: { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" }
