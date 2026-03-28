@@ -241,7 +241,7 @@ await Promise.all([
         }
       }
 
-     // ===================================================
+// ===================================================
 // 5. ПАРСИНГ LEPORNO.DE (ИСПРАВЛЕННЫЙ)
 // ===================================================
 if (lepornoHtml) {
@@ -263,19 +263,19 @@ if (lepornoHtml) {
     const fileIdMatch = row.match(/href=["']\.\/download\/file\.php\?id=(\d+)["']/i);
     const fileId = fileIdMatch ? fileIdMatch[1] : null;
     
-    // Извлекаем размер (может быть в разных форматах)
-    const sizeMatch = row.match/(?:Размер|Size|Größe):\s*<b>([\d.,]+)&nbsp;([TGMK]Б|[TGMK]B)/i);
+    // Извлекаем размер (может быть в разных форматах) - ИСПРАВЛЕН СИНТАКСИС
+    const sizeMatch = row.match(/(?:Размер|Size|Größe):\s*<b>([\d.,]+)&nbsp;([TGMK]Б|[TGMK]B)/i);
     let size = 0;
     if (sizeMatch) {
       size = parseSizeToBytes(sizeMatch[1], sizeMatch[2]);
     }
     
-    // Извлекаем сиды и личи
-    const seedsMatch = row.match/<span class=["']my_tt seed["'][^>]*><b>(\d+)<\/b><\/span>/i);
-    const leechMatch = row.match/<span class=["']my_tt leech["'][^>]*><b>(\d+)<\/b><\/span>/i);
+    // Извлекаем сиды и личи - ИСПРАВЛЕН СИНТАКСИС
+    const seedsMatch = row.match(/<span class=["']my_tt seed["'][^>]*><b>(\d+)<\/b><\/span>/i);
+    const leechMatch = row.match(/<span class=["']my_tt leech["'][^>]*><b>(\d+)<\/b><\/span>/i);
     
-    // Извлекаем здоровье (health)
-    const healthMatch = row.match/(?:Здоровье|Health):\s*<b>(\d+)<\/b>/i);
+    // Извлекаем здоровье (health) - ИСПРАВЛЕН СИНТАКСИС
+    const healthMatch = row.match(/(?:Здоровье|Health):\s*<b>(\d+)<\/b>/i);
     
     lepItems.push({
       id: torrentId,
@@ -311,22 +311,22 @@ if (lepornoHtml) {
           const pageRes = await fetch(`https://leporno.de/viewtopic.php?t=${item.id}`);
           const pageHtml = await pageRes.text();
           
-          // Ищем битрейт на странице (может быть в разных местах)
+          // Ищем битрейт на странице (может быть в разных местах) - ИСПРАВЛЕН СИНТАКСИС
           const bitrateMatch = pageHtml.match(/(\d+)\s*(kbps|kb\/s|mbps|кбит\/с)/i);
           if (bitrateMatch) {
             bitrate = bitrateMatch[0];
             detailedTitle = `${item.title} [${bitrate}]`;
           }
           
-          // Уточняем размер со страницы (если есть более точные данные)
+          // Уточняем размер со страницы (если есть более точные данные) - ИСПРАВЛЕН СИНТАКСИС
           const detailedSizeMatch = pageHtml.match(/(?:Размер|Size|Größe):\s*<b>([\d.,]+)&nbsp;([TGMK]Б|[TGMK]B)/i);
           if (detailedSizeMatch) {
             item.size = parseSizeToBytes(detailedSizeMatch[1], detailedSizeMatch[2]);
           }
           
-          // Уточняем сиды и личи со страницы
-          const detailedSeedsMatch = pageHtml.match/<span class=["']my_tt seed["'][^>]*><b>(\d+)<\/b><\/span>/i);
-          const detailedLeechMatch = pageHtml.match/<span class=["']my_tt leech["'][^>]*><b>(\d+)<\/b><\/span>/i);
+          // Уточняем сиды и личи со страницы - ИСПРАВЛЕН СИНТАКСИС
+          const detailedSeedsMatch = pageHtml.match(/<span class=["']my_tt seed["'][^>]*><b>(\d+)<\/b><\/span>/i);
+          const detailedLeechMatch = pageHtml.match(/<span class=["']my_tt leech["'][^>]*><b>(\d+)<\/b><\/span>/i);
           
           if (detailedSeedsMatch) item.seeds = parseInt(detailedSeedsMatch[1]);
           if (detailedLeechMatch) item.leech = parseInt(detailedLeechMatch[1]);
@@ -366,6 +366,7 @@ if (lepornoHtml) {
     }
   }));
 }
+
 
 
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
