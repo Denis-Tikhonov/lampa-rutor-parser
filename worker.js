@@ -19,7 +19,6 @@ export default {
     const seen = new Set();
     
     try {
-      // 1. ПЕРВИЧНЫЕ ЗАПРОСЫ
       const [rutorPages, nnmBuffer, xxxtorHtml, lepornoHtml] = await Promise.all([
         Promise.all([1, 2, 4, 5, 10].map(cat =>
           fetch(`https://rutor.info/search/0/0/0${cat}0/0/${encodedQuery}`, { headers: { "User-Agent": "Mozilla/5.0" } }).then(r => r.text()).catch(() => "")
@@ -151,7 +150,6 @@ export default {
           if (lepItems.length >= 15) break;
         }
         
-        // Получаем hash из торрент-файлов
         await Promise.all(lepItems.map(async item => {
           try {
             const torrentRes = await fetch(`https://leporno.de/download/file.php?id=${item.fileId}`, {
@@ -169,7 +167,16 @@ export default {
               
               if (hash && !seen.has(hash)) {
                 seen.add(hash);
-                const magnetUri = `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}&tr=udp://tracker.opentrackr.org:1337/announce&tr=udp://open.stealth.si:80/announce&tr=udp://tracker.torrent.eu.org:451/announce`;
+                
+                const trackers = [
+                  'udp://tracker.opentrackr.org:1337/announce',
+                  'udp://open.stealth.si:80/announce',
+                  'udp://tracker.torrent.eu.org:451/announce',
+                  'udp://tracker.openbittorrent.com:80/announce',
+                  'udp://exodus.desync.com:6969/announce'
+                ];
+                const trParams = trackers.map(t => `tr=${encodeURIComponent(t)}`).join('&');
+                const magnetUri = `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(item.title)}&${trParams}`;
                 
                 Results.push({
                   Title: item.title,
